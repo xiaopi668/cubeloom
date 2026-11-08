@@ -47,6 +47,9 @@ function resolveRequireAuth(remoteAddress?: string): boolean {
   return !isLoopback(remoteAddress);
 }
 
+/** 需要平铺进沙箱的 VoxelGeometry 命名空间（顺序即覆盖顺序） */
+const PURE_NAMESPACES = ["Generator", "Exp", "Transform", "LSystem", "IFS", "DLA"] as const;
+
 type Setting = {
   block: string;
   origin: V.Vec3;
@@ -55,10 +58,8 @@ type Setting = {
 
 export default class Session {
   session: ServerSession;
-  history: Array<string> = [];
   sandbox: Sandbox = new Sandbox({});
   setting: Setting;
-  callbacks: { [key: string]: (arg: any) => void } = {};
   /** 运行统计，供网页管理端展示 */
   stats = { messages: 0, commands: 0, setblocks: 0, errors: 0 };
   lastActivity = 0;
@@ -114,17 +115,16 @@ export default class Session {
   }
 
   load_pure_functions() {
-    this.sandbox.updateEnv({
-      ...V.Generator,
-      ...V.Exp,
-      ...V.Transform,
-      ...V.LSystem,
-      ...V.IFS,
-      ...V.DLA,
-      Turtle2D: V.Turtle2D,
-      Turtle3D: V.Turtle3D,
-      vec3: Vec3,
-    });
+    // 把 VoxelGeometry 的各命名空间平铺进沙箱：脚本里直接写 sphere(...) 而不是 V.Generator.sphere(...)
+    const api: Record<string, unknown> = {};
+    for (const ns of PURE_NAMESPACES) {
+      const bag = (V as Record<string, unknown>)[ns];
+      if (bag && typeof bag === "object") Object.assign(api, bag);
+    }
+    api.Turtle2D = V.Turtle2D;
+    api.Turtle3D = V.Turtle3D;
+    api.vec3 = Vec3;
+    this.sandbox.updateEnv(api);
   }
 
   load_effect_functions() {
@@ -132,23 +132,27 @@ export default class Session {
       session: this.session,
       // 方法必须绑定 this：沙箱里是当普通函数调用的，否则 this 为 undefined
       plot: this.plot.bind(this),
-      pos: () => {
-        this.session.sendCommand("testforblock ~ ~ ~ air", ({ body }) => {
-          this.setting.origin = body.position as V.Vec3;
-          this.tell_raw(
-            `位置已记录：${this.setting.origin.x}, ${this.setting.origin.y}, ${this.setting.origin.z}`
-          );
-        });
-      },
+      pos: () => this.markOrigin(),
       setBlocks,
       tell_raw: (...message: string[]) => this.tell_raw(...message),
     });
   }
 
-  plot(space: Space, o = this.setting.origin, block = this.setting.block) {
+  /** 读取玩家当前站位，写进 setting.origin */
+  private markOrigin() {
+    this.session.sendCommand("testforblock ~ ~ ~ air", ({ body }) => {
+      const p = body.position as V.Vec3;
+      this.setting.origin = p;
+      this.tell_raw(`位置已记录：${p.x}, ${p.y}, ${p.z}`);
+    });
+  }
+
+  /** 落一整片体素；原点偏移先做仿射变换，再逐块下发 */
+  plot(space: Space, origin = this.setting.origin, block = this.setting.block) {
     this.stats.setblocks += space.length;
     this.lastActivity = Date.now();
-    return setBlocks(this.session)(block)(V.Transform.move(space, lift(o)));
+    const worldSpace = V.Transform.move(space, lift(origin));
+    setBlocks(this.session)(block)(worldSpace);
   }
 
   /** 执行一段沙箱脚本（聊天命令和控制台共用） */
@@ -270,7 +274,6 @@ export default class Session {
   }
 
   bind_user() {
-    let t = this;
     this.session.subscribe("PlayerMessage", ({ body }) => {
       // 旧协议(<=1.0)在 body.message，新协议在 body.properties.Message，两种都兼容
       const b = body as any;
@@ -333,13 +336,13 @@ export default class Session {
 
       if (text.startsWith("-")) {
         const script = text.substring(1).trim();
-        const r = t.run(script);
+        const r = this.run(script);
         if (!r.ok) {
-          t.tell_raw(`>> 错误：${r.error}`);
+          this.tell_raw(`>> 错误：${r.error}`);
         } else if (r.result === undefined) {
-          t.tell_raw(`>> 已执行`);
+          this.tell_raw(`>> 已执行`);
         } else {
-          t.tell_raw(`>> 结果：${r.result}`);
+          this.tell_raw(`>> 结果：${r.result}`);
         }
       }
     });
@@ -462,12 +465,17 @@ export default class Session {
     for (const line of lines) this.chat(`  ${line}`);
   }
 
+  /** 内部：把若干行文本发给指定目标（@s 本人 / @a 全服） */
+  private tell(target: "@s" | "@a", message: string[]) {
+    this.session.sendCommand(tell_raw(target, ...message.map((m) => `§e${m}`)));
+  }
+
   tell_raw(...message: string[]) {
-    this.session.sendCommand(tell_raw("@s", ...message.map((m) => `§e${m}`)));
+    this.tell("@s", message);
   }
 
   broadcast(...message: string[]) {
-    this.session.sendCommand(tell_raw("@a", ...message.map((m) => `§e${m}`)));
+    this.tell("@a", message);
   }
 }
 

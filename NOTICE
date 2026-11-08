@@ -19,9 +19,9 @@ Copyright (C) 2026 Cubeloom contributors
 2. FastBuilder
    来源：https://github.com/CAIMEOX/FastBuilder
    作者：CAIMEO
-   许可：仓库未声明许可证 —— 见下方「授权缺口」。
-   说明：本项目中的 src/effect.ts、src/utils.ts、src/session.ts 的早期版本
-         源自该仓库。
+   许可：仓库未声明许可证 —— 见下方「关于 FastBuilder 的授权状态」。
+   说明：CyanQiuper-Builder 的部分实现源自该仓库；Cubeloom 已把这些实现
+         按独立方案重写，只保留接口形状。
 
 3. VoxelGeometry / @pureeval/voxel-geometry
    来源：https://github.com/CAIMEOX/VoxelGeometry
@@ -39,15 +39,27 @@ Copyright (C) 2026 Cubeloom contributors
    许可：MIT License
 
 ────────────────────────────────────────────────────────
-授权缺口（发布前必须处理，二选一）
+关于 FastBuilder 的授权状态
 ────────────────────────────────────────────────────────
 
-FastBuilder 仓库没有 LICENSE 文件，按著作权法默认「保留所有权利」。
-CyanQiuper-Builder 单方面标注 MIT 不能替原作者授权。因此：
+CAIMEOX/FastBuilder 仓库没有 LICENSE 文件，按著作权法默认「保留所有权利」。
+CyanQiuper-Builder 单方面标注的 MIT 不能替原作者授权。
 
-  方案 A（推荐）：联系 CAIMEO 取得书面许可（Issue 或邮件），
-                  把许可回复存档在 docs/permissions/fastbuilder.md
-  方案 B：重写源自 FastBuilder 的文件（至少 src/effect.ts、src/utils.ts），
-          只保留接口形状，实现独立重写，并在 commit 中留痕
+Cubeloom 的处理方式：**不再沿用来自 FastBuilder 的实现代码**。
 
-在两者完成之前，本仓库不应公开分发二进制或源码包。
+  src/effect.ts    落块层：改为「前缀缓存 + 单次遍历」，拆出 setBlockCommand
+                   纯函数；公共 API 形状（setBlocks(session)(block)(space) 等）
+                   保持不变以便脚本兼容
+  src/utils.ts     回显层：改用对象 + JSON.stringify 组装 tellraw，顺带修掉
+                   正文含 `"` 或反斜杠时生成非法 JSON 的问题
+  src/sandbox.ts   命令沙箱：改为 node:vm 独立上下文（禁 process/require、
+                   禁字符串构造、5 秒超时）
+  src/session.ts   plot / 原点记录 / 沙箱注入 / 文本回显：重写或抽成独立方法，
+                   并删除两个从未使用的上游遗留字段
+
+仍保留的部分是接口事实——导出名、类型字段名（`setting.block` 等脚本可直接
+读写的属性）、方法名与 `testforblock ~ ~ ~ air` 这类协议命令。这些属于功能
+要素，不构成表达性代码的复制。
+
+如需进一步消除任何疑虑，可以联系 CAIMEO 取得书面许可并归档到
+`docs/permissions/fastbuilder.md`，届时本节可一并删除。

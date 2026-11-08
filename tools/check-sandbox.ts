@@ -12,6 +12,8 @@
 import * as V from "@pureeval/voxel-geometry";
 import { Sandbox } from "../src/sandbox";
 import { isLoopback, resolveRequireAuth } from "../src/session";
+import { Vec3, lift, setBlock, setBlocks, overSpace } from "../src/effect";
+import { tell_raw } from "../src/utils";
 
 let pass = 0;
 let fail = 0;
@@ -97,5 +99,86 @@ process.env.FB_REQUIRE_AUTH = "1";
 check("FB_REQUIRE_AUTH=1 → 本机也验证", () => resolveRequireAuth("127.0.0.1") === true);
 process.env = savedEnv as any;
 
+console.log("== 落块层（src/effect.ts）==");
+function mockSession() {
+  const sent: string[] = [];
+  return { sent, sendCommand: (c: string) => { sent.push(c); return "req-1"; } };
+}
+
+check("setBlocks 逐块发 setblock 命令", () => {
+  const s = mockSession();
+  setBlocks(s as any)("minecraft:stone")([Vec3(0, 64, 0), Vec3(1, 64, 0)] as any);
+  return s.sent.length === 2 && s.sent[0] === "setblock 0 64 0 minecraft:stone";
+});
+
+check("setBlocks 命令数 = 体素数", () => {
+  const s = mockSession();
+  const sp = V.Generator.sphere(3, 0) as any;
+  setBlocks(s as any)("minecraft:iron_block")(sp);
+  return s.sent.length === sp.length && s.sent.length === 123;
+});
+
+check("setBlock 单块命令格式", () => {
+  const s = mockSession();
+  setBlock(s as any)("minecraft:gold_block")(Vec3(-3, 0, 7) as any);
+  return s.sent.length === 1 && s.sent[0] === "setblock -3 0 7 minecraft:gold_block";
+});
+
+check("空体素不发命令", () => {
+  const s = mockSession();
+  setBlocks(s as any)("minecraft:stone")([] as any);
+  return s.sent.length === 0;
+});
+
+check("overSpace 按顺序遍历", () => {
+  const seen: number[] = [];
+  overSpace([Vec3(1,0,0), Vec3(2,0,0), Vec3(3,0,0)] as any)((p: any) => seen.push(p.x));
+  return seen.join(",") === "1,2,3";
+});
+
+check("lift 对 Vec3 保持原对象", () => {
+  const v = Vec3(1, 2, 3);
+  return lift(v as any) === v;
+});
+
+check("lift 把普通对象提升为 Vec3", () => {
+  const v = lift({ x: 4, y: 5, z: 6 });
+  return v instanceof V.Vec3 && v.x === 4 && v.z === 6;
+});
+
+check("plot 等价组合：move 后坐标围绕原点", () => {
+  const s = mockSession();
+  const sp = V.Generator.sphere(1, 0) as any;
+  const origin = Vec3(10, 64, -5);
+  setBlocks(s as any)("minecraft:stone")(V.Transform.move(sp, lift(origin as any)) as any);
+  const pts = s.sent.map((c) => c.split(" ").slice(1, 4).map(Number));
+  const near = pts.every(([x, y, z]) => Math.abs(x - 10) <= 1 && Math.abs(y - 64) <= 1 && Math.abs(z + 5) <= 1);
+  return pts.length > 0 && near;
+});
+
+console.log("== 回显层（src/utils.ts）==");
+check("tell_raw 生成合法 JSON", () => {
+  const cmd = tell_raw("@s", "hello");
+  const obj = JSON.parse(cmd.slice(cmd.indexOf("{")));
+  return cmd.startsWith("tellraw @s ") && obj.rawtext[0].text.includes("hello");
+});
+
+check("tell_raw 带时间戳", () => {
+  const cmd = tell_raw("@a", "hi");
+  return /\[\d{2}:\d{2}:\d{2}\]/.test(cmd);
+});
+
+check("tell_raw 多行用换行连接", () => {
+  const obj = JSON.parse(tell_raw("@s", "a", "b").slice(tell_raw("@s", "a", "b").indexOf("{")));
+  return obj.rawtext[0].text.includes("a\nb");
+});
+
+check("正文含引号/反斜杠不破坏 JSON", () => {
+  const cmd = tell_raw("@s", 'say "hi" \\ and \\n');
+  JSON.parse(cmd.slice(cmd.indexOf("{")));
+  return true;
+});
+
 console.log(`\n通过 ${pass} / ${pass + fail}`);
+
 process.exit(fail === 0 ? 0 : 1);

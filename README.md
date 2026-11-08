@@ -113,13 +113,16 @@ Diamond-Minec/CyanQiuper-Builder (MIT)
 xiaopi668/cubeloom (AGPL-3.0)
 ```
 
-上游署名、保留的 MIT 声明、以及一处**尚未解决的授权缺口**都写在 [NOTICE](NOTICE) 里，发布或分发前请先读。
+上游署名与保留的 MIT 声明都写在 [NOTICE](NOTICE) 里。
+
+`CAIMEOX/FastBuilder` 没有 LICENSE 文件，所以来自它的实现已按独立方案重写（落块层、回显层、命令沙箱、会话的注入与回显逻辑），只保留导出名、类型字段名这类接口事实。细节见 NOTICE 的「关于 FastBuilder 的授权状态」一节。
 
 运行时依赖：`@pureeval/voxel-geometry`（VoxelGeometry，AGPL-3.0）、`mcpews`（MIT）、`ws`（MIT）。
 
 ## 已知限制
 
 - `@pureeval/voxel-geometry` 锁在 `1.2.10`：该版本 npm 元数据里没有 `license` 字段，许可依据只能看源码仓库的 LICENSE
+- 落块层每块发一条 `setblock`，十万级结构会产生同等数量的命令；要提速可以合并成 `fill`，但那会改变与服务器交互的节奏，暂未做
 - 网易版需要自备机器人本体（参考 NTvector），本仓库不含
 - 管理面板为单实例本地工具，没有账户体系；若要多人使用请自行加反代与访问控制
 

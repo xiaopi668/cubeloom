@@ -68,6 +68,16 @@ function prepareUserData() {
     console.error("复制面板资源失败：", e);
   }
   fs.mkdirSync(path.join(dir, "logs"), { recursive: true });
+  // 机器人体积大（~43MB），只在缺失时复制一次；升级由安装包重新解压到新 userData 处理
+  const srcBot = path.join(__dirname, "netease-bot");
+  const dstBot = path.join(dir, "netease-bot");
+  if (fs.existsSync(srcBot) && !fs.existsSync(path.join(dstBot, "ntvector", "Program.exe"))) {
+    try {
+      fs.cpSync(srcBot, dstBot, { recursive: true });
+    } catch (e) {
+      console.error("复制网易机器人失败：", e);
+    }
+  }
   return dir;
 }
 
@@ -83,6 +93,8 @@ function startServer() {
     FB_NO_REPL: "1",
     FB_NO_OPEN: "1",
     FB_GEOMETRY_BUNDLE: path.join(serverDir, "voxel-geometry.iife.js"),
+    FB_NETEASE_ENTRY: path.join(serverDir, "netease-service.cjs"),
+    FB_NETEASE_BOT_DIR: path.join(userData, "netease-bot"),
     FB_ADMIN_PORT: String(ADMIN_PORT),
     FB_WS_PORT: process.env.FB_WS_PORT || "11451",
     FB_CONTROL_PORT: process.env.FB_CONTROL_PORT || "11453",

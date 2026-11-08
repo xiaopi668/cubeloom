@@ -259,11 +259,14 @@ Actions 页面里对应 workflow 的 **Artifacts**（tag 构建还会附带 Rele
 > 产物**未签名**：Windows 首次运行会弹 SmartScreen（更多信息 → 仍要运行）；macOS 需要
 > `xattr -dr com.apple.quarantine /Applications/Cubeloom.app`；Android 是 debug 签名，仅自用/测试。
 
-### Windows（EXE）
+### Windows（EXE，自带网易机器人）
 
 1. 下载 `Setup` 安装包或 zip，安装/解压后启动 Cubeloom，面板在应用窗口里打开；
 2. 同一台电脑上进游戏：`/connect ws://127.0.0.1:11451`；
-3. 日志、面板口令在 `%APPDATA%\Cubeloom`。
+3. 安装包内置 NTvector（43 MB）与网易版服务：面板「网易版 → 机器人账号 / 房间」里
+   填房间 IP/端口、`user_id`、玩家名、`token`（或直接粘贴启动器导出的 `mc.cfg` JSON），
+   点「启动机器人 + 网易服务」即可；
+4. 日志、面板口令、机器人配置在 `%APPDATA%\Cubeloom`（`netease-bot/ntvector/mc.cfg`）。
 
 ### Linux（AppImage）
 

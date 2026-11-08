@@ -25,6 +25,9 @@
   - macOS：`~/Library/Application Support/Cubeloom`
   - Linux：`~/.config/Cubeloom`
 - 面板固定 `http://127.0.0.1:11452`，WS 服务 `11451`，控制口 `11453`；
+- 安装包内置 NTvector（`netease-bot/`）与 `netease-service.cjs`：
+  面板「网易版 → 机器人账号 / 房间」填 `mc.cfg` 字段（或粘贴完整 JSON），
+  点「启动机器人 + 网易服务」；机器人文件首次启动复制到 userData；
 - 游戏仍然是 `/connect ws://127.0.0.1:11451`（同机）或局域网 IP（需 `--login`）。
 
 ## 目录结构

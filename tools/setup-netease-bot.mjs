@@ -72,7 +72,7 @@ fs.writeFileSync(
   startSh,
   `#!/usr/bin/env bash\n# NTvector 官方构建仅提供 Windows；Linux 请自行按 NTvector 文档构建后替换\ncd "$(dirname "$0")/ntvector"\nexec ./Program.exe --config mc.cfg --logger --no-ui\n`
 );
-fs.chmodSync(startSh, 0o755);
+try { fs.chmodSync(startSh, 0o755); } catch {}
 
 console.log(`
 完成。接下来：

@@ -16,6 +16,7 @@
  */
 import { spawn, ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
+import * as net from "node:net";
 
 export type ManagedBotOptions = {
   /** 完整命令行（用 shell 执行，支持 .cmd/.bat/带参数） */
@@ -99,13 +100,29 @@ export class ManagedBot {
   /** 等事件桥 socket 就绪（文件存在或可连接） */
   async waitReady(timeoutMs = this.opts.readyTimeoutMs): Promise<boolean> {
     if (!this.opts.socketPath) return true;
+    const tcp = /^tcp:\/\/(\[[^\]]+\]|[^/:]+):(\d{1,5})$/.exec(this.opts.socketPath.trim());
+    const tcpProbe = (host: string, port: number) =>
+      new Promise<boolean>((resolve) => {
+        const sock = net.connect({ host, port });
+        const done = (ok: boolean) => {
+          try { sock.destroy(); } catch {}
+          resolve(ok);
+        };
+        sock.setTimeout(800, () => done(false));
+        sock.once("connect", () => done(true));
+        sock.once("error", () => done(false));
+      });
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
       if (this.stopping) return false;
-      try {
-        if (fs.existsSync(this.opts.socketPath)) return true;
-      } catch {
-        /* 路径不存在继续等 */
+      if (tcp) {
+        if (await tcpProbe(tcp[1].replace(/^\[|\]$/g, ""), Number(tcp[2]))) return true;
+      } else {
+        try {
+          if (fs.existsSync(this.opts.socketPath)) return true;
+        } catch {
+          /* 路径不存在继续等 */
+        }
       }
       // 进程已经挂了就不必等满超时
       if (!this.child && this.restarts === 0) return false;

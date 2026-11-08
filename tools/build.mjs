@@ -65,6 +65,7 @@ rm(BUILD);
 fs.mkdirSync(SERVER, { recursive: true });
 bundle("main.ts", path.join(SERVER, "main.cjs"));
 bundle("admin-server.ts", path.join(SERVER, "admin-server.cjs"));
+bundle("netease-service.ts", path.join(SERVER, "netease-service.cjs"));
 
 // 几何库 IIFE：供 sandbox-bundle 脱机加载（打包环境没有 esbuild 二进制）
 const geo = buildSync({
@@ -119,7 +120,7 @@ if (!onlyServer) {
       productName: "Cubeloom",
       asar: false,
       electronVersion: process.env.ELECTRON_VERSION || "38.2.0",
-      files: ["electron-main.cjs", "server/**", "admin/**", "package.json"],
+      files: ["electron-main.cjs", "server/**", "admin/**", "netease-bot/**", "package.json"],
       directories: { output: "../../dist-app" },
       linux: { target: ["AppImage", "tar.gz"], category: "Utility" },
       win: { target: ["nsis", "zip"] },

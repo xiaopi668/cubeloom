@@ -51,6 +51,11 @@ const ROOT = (() => {
   return path.dirname(path.resolve(process.argv[1] ?? "."));
 })();
 const ADMIN_DIR = path.join(ROOT, "admin");
+/** 网易机器人运行目录（打包时复制到 userData，开发时在仓库 netease-bot/） */
+const NETEASE_BOT_DIR = (process.env.FB_NETEASE_BOT_DIR || path.join(ROOT, "netease-bot")).trim();
+const NETEASE_CORE_DIR = path.join(NETEASE_BOT_DIR, "ntvector");
+const NETEASE_MC_CFG = path.join(NETEASE_CORE_DIR, "mc.cfg");
+const NETEASE_BRIDGE_CFG = path.join(NETEASE_CORE_DIR, "scripts", "cubeloom_bridge", "cubeloom_bridge.json");
 const LOG_DIR = path.join(ROOT, "logs");
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const ADMIN_LOG = path.join(LOG_DIR, "admin.log");
@@ -696,6 +701,113 @@ async function waitForWs(timeoutMs = 8000): Promise<any | null> {
   return null;
 }
 
+/** ===== 网易版服务 + 机器人托管 ===== */
+let neteaseChild: ChildProcess | null = null;
+let neteaseStartedAt = 0;
+
+function readJsonFile(file: string): any | null {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** 原子写（tmp + fsync + rename + 0600），口令/账号文件都用它 */
+function writeFileAtomic(file: string, text: string) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  const fd = fs.openSync(tmp, "w", 0o600);
+  try {
+    fs.writeSync(fd, text);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, file);
+  try { fs.chmodSync(file, 0o600); } catch {}
+}
+
+function neteaseBotCommand(): string | null {
+  const forced = (process.env.FB_NETEASE_BOT_CMD || "").trim();
+  if (forced) return forced;
+  const candidates = IS_WIN
+    ? [path.join(NETEASE_BOT_DIR, "start-bot.bat")]
+    : [path.join(NETEASE_BOT_DIR, "start-bot.sh")];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
+  const exe = path.join(NETEASE_CORE_DIR, "Program.exe");
+  return fs.existsSync(exe) ? `"${exe}" --config mc.cfg --logger --no-ui` : null;
+}
+
+function neteaseEntry(): { cmd: string; args: string[] } | null {
+  const packaged = (process.env.FB_NETEASE_ENTRY || "").trim();
+  if (packaged && fs.existsSync(packaged)) return { cmd: process.execPath, args: [packaged] };
+  const tsxCli = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
+  if (fs.existsSync(path.join(ROOT, "netease-service.ts")) && fs.existsSync(tsxCli)) {
+    return { cmd: process.execPath, args: [tsxCli, "netease-service.ts"] };
+  }
+  return null;
+}
+
+function spawnNetease(): { ok: boolean; error?: string } {
+  if (neteaseChild) return { ok: false, error: "网易版服务已在运行" };
+  const entry = neteaseEntry();
+  if (!entry) return { ok: false, error: "找不到 netease-service（开发模式需要 tsx，打包版需要 server/netease-service.cjs）" };
+  const bridge = readJsonFile(NETEASE_BRIDGE_CFG) || {};
+  const token = String(bridge.token || "");
+  const botCmd = neteaseBotCommand();
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    FB_NETEASE_PORT: String(NETEASE_PORT),
+    FB_NETEASE_HOST: "127.0.0.1",
+    FB_NETEASE_SOCKET: "tcp://127.0.0.1:17999",
+    FB_NETEASE_TOKEN: token,
+    FB_LOG_DIR: LOG_DIR,
+  };
+  if (botCmd) env.FB_NETEASE_BOT_CMD = botCmd;
+  const child = spawn(entry.cmd, entry.args, {
+    cwd: ROOT,
+    env,
+    windowsHide: true,
+    detached: !IS_WIN,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  neteaseChild = child;
+  neteaseStartedAt = Date.now();
+  log(`启动网易版服务（PID ${child.pid}${botCmd ? "，托管机器人" : ""}）`);
+  child.stdout?.on("data", (d: Buffer) => pipeChild(d, false));
+  child.stderr?.on("data", (d: Buffer) => pipeChild(d, true));
+  child.on("exit", (code) => {
+    log(`网易版服务已退出（code=${code}）`);
+    neteaseChild = null;
+  });
+  return { ok: true };
+}
+
+function stopNetease(): boolean {
+  if (!neteaseChild?.pid) return false;
+  const pid = neteaseChild.pid;
+  log(`停止网易版服务（PID ${pid}）`);
+  try {
+    if (IS_WIN) spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    else process.kill(-pid, "SIGTERM");
+  } catch {
+    try { neteaseChild.kill("SIGTERM"); } catch {}
+  }
+  neteaseChild = null;
+  return true;
+}
+
+async function waitForNetease(timeoutMs = 15000): Promise<boolean> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const r = await neteaseFetch("/health", { method: "GET" }, 1500);
+    if (r?.ok) return true;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return false;
+}
+
 /** ===== HTTP 工具 ===== */
 function sendJson(res: ServerResponse, code: number, data: unknown) {
   const body = Buffer.from(JSON.stringify(data), "utf8");
@@ -1174,6 +1286,94 @@ const server = createServer(async (req, res) => {
     }
 
     // ---- 日志文件列表 ----
+    // ---- 网易版：账号/房间配置 + 服务启停（必须在反代之前）----
+    if (p === "/api/netease-service/config" && req.method === "GET") {
+      const cfg = readJsonFile(NETEASE_MC_CFG);
+      const bridge = readJsonFile(NETEASE_BRIDGE_CFG) || {};
+      const template = {
+        room_info: { ip: "", port: 19132 },
+        player_info: { user_id: "", user_name: "", operator_name: "", token: "" },
+        misc: {
+          auth_server_url: "",
+          launcher_port: 0,
+          engine_version: "",
+          patch_version: "",
+          netease_sid: "",
+          g79: false,
+          client_data_path: "",
+        },
+        skin_info: { skin: "", model: "" },
+      };
+      return sendJson(res, 200, {
+        ok: true,
+        botDir: NETEASE_BOT_DIR,
+        coreDir: NETEASE_CORE_DIR,
+        installed: fs.existsSync(path.join(NETEASE_CORE_DIR, "Program.exe")),
+        hasCfg: !!cfg,
+        cfg: cfg || template,
+        template: !cfg,
+        bridgeToken: String(bridge.token || ""),
+        botCmd: neteaseBotCommand(),
+        canStart: !!neteaseEntry(),
+      });
+    }
+
+    if (p === "/api/netease-service/config" && req.method === "POST") {
+      const body = await readJson(req, 4 << 20);
+      const cfg = body.cfg;
+      if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+        return sendJson(res, 400, { ok: false, error: "cfg 必须是一个 JSON 对象" });
+      }
+      try {
+        writeFileAtomic(NETEASE_MC_CFG, JSON.stringify(cfg, null, 2) + "\n");
+        log(`网易版配置已保存：${path.relative(ROOT, NETEASE_MC_CFG)}`);
+        return sendJson(res, 200, { ok: true, file: NETEASE_MC_CFG });
+      } catch (e: any) {
+        return sendJson(res, 500, { ok: false, error: `写入 mc.cfg 失败：${e?.message ?? e}` });
+      }
+    }
+
+    if (p === "/api/netease-service/state" && req.method === "GET") {
+      return sendJson(res, 200, {
+        ok: true,
+        running: !!neteaseChild,
+        pid: neteaseChild?.pid ?? null,
+        startedAt: neteaseStartedAt || null,
+        botDir: NETEASE_BOT_DIR,
+        installed: fs.existsSync(path.join(NETEASE_CORE_DIR, "Program.exe")),
+        hasCfg: fs.existsSync(NETEASE_MC_CFG),
+        botCmd: neteaseBotCommand(),
+        canStart: !!neteaseEntry(),
+      });
+    }
+
+    if (p === "/api/netease-service/action" && req.method === "POST") {
+      const body = await readJson(req);
+      const action = String(body.action || "");
+      if (action === "start") {
+        if (neteaseChild) return sendJson(res, 200, { ok: false, error: "网易版服务已在运行" });
+        const r = spawnNetease();
+        if (!r.ok) return sendJson(res, 200, { ok: false, error: r.error });
+        const up = await waitForNetease();
+        return sendJson(res, 200, up ? { ok: true, running: true } : { ok: false, error: "网易版服务 15 秒内没有就绪，请看日志" });
+      }
+      if (action === "stop") {
+        if (!neteaseChild) return sendJson(res, 200, { ok: false, error: "网易版服务未运行" });
+        stopNetease();
+        await new Promise((r) => setTimeout(r, 400));
+        return sendJson(res, 200, { ok: true, running: false });
+      }
+      if (action === "restart") {
+        stopNetease();
+        await new Promise((r) => setTimeout(r, 500));
+        const r = spawnNetease();
+        if (!r.ok) return sendJson(res, 200, { ok: false, error: r.error });
+        const up = await waitForNetease();
+        return sendJson(res, 200, up ? { ok: true, running: true } : { ok: false, error: "重启后 15 秒内没有就绪，请看日志" });
+      }
+      return sendJson(res, 400, { ok: false, error: `未知 action: ${action}` });
+    }
+
     // ---- 网易版（机器人事件桥）反代 ----
     if (p.startsWith("/api/netease/")) {
       const sub = p.slice("/api/netease".length);

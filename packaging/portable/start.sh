@@ -8,5 +8,7 @@ exec env \
   FB_FORCE_ENTRY=1 \
   FB_NO_REPL=1 \
   FB_GEOMETRY_BUNDLE="$PWD/server/voxel-geometry.iife.js" \
+  FB_NETEASE_ENTRY="$PWD/server/netease-service.cjs" \
+  FB_NETEASE_BOT_DIR="$PWD/netease-bot" \
   FB_LOG_DIR="$PWD/logs" \
   node server/admin-server.cjs

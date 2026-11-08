@@ -276,7 +276,30 @@
         <button class="btn accent small" id="profile-save">保存配置</button>
         <span class="log-info">「使用」会把连接参数复制到剪贴板并标记为当前配置</span>
       </div>
-    </section></div><div class="stack"><section class="panel">
+    </section></div><div class="stack"><section class="panel" id="panel-nte-account">
+      <h2>机器人账号 / 房间</h2>
+      <div class="log-info" style="margin-bottom:8px; white-space:normal">
+        填写 NTvector 的 mc.cfg。token 需要从启动器导出（Base64），也可以直接把已有 mc.cfg 粘到下面。
+      </div>
+      <div class="sl-form">
+        <input id="nte-cfg-ip" type="text" placeholder="房间 IP" />
+        <input id="nte-cfg-port" type="number" placeholder="端口（默认 19132）" />
+        <input id="nte-cfg-uid" type="text" placeholder="user_id" />
+        <input id="nte-cfg-uname" type="text" placeholder="玩家名 user_name" />
+        <input id="nte-cfg-opname" type="text" placeholder="operator_name（可空）" />
+        <input id="nte-cfg-token" type="text" placeholder="token（Base64）" />
+        <textarea id="nte-cfg-json" class="full" rows="9" spellcheck="false"
+          style="background:var(--code-bg); color:var(--fg); border:1px solid var(--line-2); border-radius:8px; padding:10px; font-family:var(--mono); font-size:12px; width:100%; resize:vertical"
+          placeholder="完整 mc.cfg JSON"></textarea>
+      </div>
+      <div class="sl-row">
+        <button class="btn accent small" id="nte-cfg-save">保存配置</button>
+        <button class="btn small" id="nte-svc-start">启动机器人 + 网易服务</button>
+        <button class="btn small" id="nte-svc-stop">停止</button>
+        <button class="btn small" id="nte-svc-restart">重启</button>
+      </div>
+      <div class="log-info" id="nte-svc-state" style="margin-top:8px; white-space:normal">检测中…</div>
+    </section><section class="panel">
       <h2>网易版（机器人 · 事件桥）</h2>
       <div class="log-info" id="nte-status" style="margin-bottom:8px; white-space:normal">检测中…</div>
       <div class="player">
@@ -745,6 +768,80 @@
       $("nte-info").textContent = "读取坐标失败：" + (r.error || "未知错误");
     }
   }
+
+  /* ---- 网易版账号/房间配置 ---- */
+  let nteCfg = null;
+  async function nteLoadConfig() {
+    let r;
+    try {
+      r = await api("/api/netease-service/config");
+    } catch (e) {
+      $("nte-svc-state").textContent = "读取配置失败：" + (e && e.message ? e.message : e);
+      return;
+    }
+    nteCfg = r;
+    if (!r || !r.ok) {
+      $("nte-svc-state").textContent = (r && r.error) || "读取配置失败";
+      return;
+    }
+    const c = r.cfg || {};
+    const room = c.room_info || {};
+    const p = c.player_info || {};
+    $("nte-cfg-ip").value = room.ip || "";
+    $("nte-cfg-port").value = room.port || 19132;
+    $("nte-cfg-uid").value = p.user_id || "";
+    $("nte-cfg-uname").value = p.user_name || "";
+    $("nte-cfg-opname").value = p.operator_name || "";
+    $("nte-cfg-token").value = p.token || "";
+    $("nte-cfg-json").value = JSON.stringify(c, null, 2);
+    const installed = r.installed ? "机器人已解压" : "机器人未解压（先运行 npm run setup:netease-bot）";
+    $("nte-svc-state").textContent = `${installed} · ${r.hasCfg ? "已有 mc.cfg" : "尚未填写 mc.cfg"}${r.bridgeToken ? " · 桥 token 已生成" : " · 缺少桥 token"}`;
+  }
+
+  async function nteSaveConfig() {
+    let cfg;
+    try {
+      cfg = JSON.parse($("nte-cfg-json").value || "{}");
+    } catch (e) {
+      $("nte-svc-state").textContent = "mc.cfg JSON 格式错误：" + (e && e.message ? e.message : e);
+      return;
+    }
+    cfg.room_info = cfg.room_info || {};
+    cfg.player_info = cfg.player_info || {};
+    if ($("nte-cfg-ip").value.trim()) cfg.room_info.ip = $("nte-cfg-ip").value.trim();
+    const port = Number($("nte-cfg-port").value);
+    if (Number.isFinite(port) && port > 0) cfg.room_info.port = port;
+    const uid = $("nte-cfg-uid").value.trim();
+    const uname = $("nte-cfg-uname").value.trim();
+    const opname = $("nte-cfg-opname").value.trim();
+    const token = $("nte-cfg-token").value.trim();
+    if (uid) cfg.player_info.user_id = uid;
+    if (uname) cfg.player_info.user_name = uname;
+    if (opname) cfg.player_info.operator_name = opname;
+    if (token) cfg.player_info.token = token;
+    const r = await post("/api/netease-service/config", { cfg });
+    if (r && r.ok) {
+      $("nte-cfg-json").value = JSON.stringify(cfg, null, 2);
+      $("nte-svc-state").textContent = "配置已保存：" + (r.file || "mc.cfg");
+      addEntry("网易版保存配置", r);
+    } else {
+      $("nte-svc-state").textContent = (r && r.error) || "保存失败";
+    }
+  }
+
+  async function nteServiceAction(action) {
+    const r = await post("/api/netease-service/action", { action });
+    $("nte-svc-state").textContent = r && r.ok ? "操作成功，正在刷新状态…" : ((r && r.error) || "操作失败");
+    addEntry("网易版服务 " + action, r);
+    setTimeout(nteLoadConfig, 800);
+    setTimeout(nteRefresh, 1200);
+  }
+
+  document.getElementById("nte-cfg-save").onclick = nteSaveConfig;
+  document.getElementById("nte-svc-start").onclick = () => nteServiceAction("start");
+  document.getElementById("nte-svc-stop").onclick = () => nteServiceAction("stop");
+  document.getElementById("nte-svc-restart").onclick = () => nteServiceAction("restart");
+  nteLoadConfig();
 
   document.getElementById("btn-nte-prepare").onclick = ntePrepare;
   document.getElementById("btn-nte-build").onclick = nteBuild;

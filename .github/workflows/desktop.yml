@@ -31,6 +31,8 @@ jobs:
           cache: npm
       - name: 安装依赖
         run: npm ci --no-audit --no-fund
+      - name: 解压网易机器人（内置到安装包）
+        run: npm run setup:netease-bot
       - name: 预编译 server / desktop / mobile bundle
         run: npm run build
       - name: 打包（未签名）

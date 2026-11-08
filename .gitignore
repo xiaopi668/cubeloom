@@ -34,7 +34,7 @@ build/
 dist-app/
 
 # 机器人本体与账号凭据（自行放入，不入库）
-netease-bot/
+/netease-bot/
 
 # Android 构建中间产物
 packaging/android/local.properties

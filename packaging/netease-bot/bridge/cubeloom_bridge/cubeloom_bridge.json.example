@@ -1,0 +1,7 @@
+{
+  "host": "127.0.0.1",
+  "port": 17999,
+  "token": "改成随机串，并让 Cubeloom 的 FB_NETEASE_TOKEN 一致",
+  "protocol": 860,
+  "gameVersion": "1.21.120"
+}

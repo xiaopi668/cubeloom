@@ -63,6 +63,7 @@ Minecraft 基岩版 WebSocket 结构生成器 + 黑白配色网页后台。
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `FB_ADMIN_PORT` | 11452 | 管理页端口 |
+| `FB_ADMIN_HOST` | 127.0.0.1 | 管理页绑定地址。默认只监听回环；改成 `0.0.0.0` 前**先设面板口令**（`npm run set-password`），否则等于把代码执行入口开给整个局域网 |
 | `FB_WS_PORT` | 11451 | WS 服务端口 |
 | `FB_CONTROL_PORT` | 11453 | 控制接口端口 |
 | `FB_WS_VERSION` | 17104896 | WebSocket 协议版本（1.5.0）。换成更老的客户端（如网易版 1.21.1）握手失败时可调 |
@@ -123,7 +124,7 @@ systemctl restart cubeloom
 
 ## 界面（v2）
 
-- **品牌图形**：`admin/assets/logo.svg` / `icon.svg` / `favicon.png`，由 `tools/make-brand.py` 生成（三颗等距体素方块向上生长 + 两颗拖尾小方块（青绿三阶配色，原创设计））；改颜色改脚本里的 `TEAL` 后重跑即可
+- **品牌图形**：`admin/assets/logo.svg` / `icon.svg` / `favicon.png` / `icon-512.png` / `apple-touch-icon.png`（三颗等距体素方块向上生长 + 两颗拖尾小方块，青绿三阶配色）；生成脚本已随商业化模块一起移除，重绘时替换同名文件即可（`logo.svg`/`icon.svg` 直接改 fill 颜色）
 - **主题切换**：右上角「切换到浅色 / 切换到深色」，偏好存 localStorage，登录页同样生效
 - **时间统一 UTC+8**：服务端日志与页面显示全部北京时间（日志行内是 `2026-10-29T18:48:06+08:00`），页面右上角有时钟
 - **全中文界面**：按钮、统计、提示、游戏内回显（`>> 已执行` / `>> 结果：2` / `>> 错误：…`）、欢迎语都是中文

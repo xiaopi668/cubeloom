@@ -134,7 +134,8 @@
     const tick = async () => {
       try {
         const s = await (await fetch("/api/status")).json();
-        const b = s && s.structure && s.structure.build;
+        // 同 pixelart：结构状态在 s.ws.structure 下
+        const b = s && s.ws && s.ws.structure && s.ws.structure.build;
         if (!b) return;
         const pct = b.total ? Math.floor((b.placed / b.total) * 100) : 0;
         $("px-t-info").textContent = `导入中：${b.name} · ${b.placed}/${b.total}（${pct}%）`;

@@ -615,7 +615,7 @@ async function verifyStructure(deep = false, opts: { pipeline?: boolean; cap?: n
   const missing: VerifyPoint[] = [];
   const world = (p: VerifyPoint) => ({ x: origin.x + p.x, y: origin.y + p.y + offsetY, z: origin.z + p.z });
   if (!hud || !hud.active) hudStart(st.name, st.total, pendingFormat);
-  if (pipeline && build) hud.placed = build.placed;
+  if (pipeline && build) hud!.placed = build.placed;
   hudSetPhase(pipeline ? "第 2/3 步 完整性校验" : "完整性检查", "回读进度", 0, points.length);
   const aborted = () => pipeline && (!build || build.cancelled);
 
@@ -1159,10 +1159,63 @@ function readJson(req: IncomingMessage, limit = 1 << 20): Promise<any> {
   });
 }
 
+/**
+ * 控制接口请求守卫：挡 CSRF 与 DNS rebinding。
+ *
+ * 背景：控制口只绑 127.0.0.1，但"只绑回环"不等于"只有本机可信代码能调"——
+ *   1. 任意网页都能向 http://127.0.0.1:11453/eval 发 no-cors/form POST（CSRF）；
+ *   2. 攻击者用域名解析到 127.0.0.1，浏览器就把它当同站（DNS rebinding）。
+ * 规则（三条都满足才放行）：
+ *   · 写操作必须是 application/json —— form 表单和 no-cors fetch 都伪造不了这个头；
+ *   · 带 Origin 时必须与 Host 同源 —— 面板同源请求正常，CLI 不带 Origin 正常；
+ *   · Host 必须是回环地址 —— 控制口只服务本机，域名形式一定不是本机代码。
+ */
+function isLoopbackHostName(name: string): boolean {
+  const n = name.toLowerCase();
+  return n === "localhost" || n === "::1" || n === "0:0:0:0:0:0:0:1" || /^127\./.test(n);
+}
+
+/** 从 Host 头取出主机名：兼容 127.0.0.1:11453 / [::1]:11453 / localhost 三种写法 */
+function splitHostPort(host: string): string {
+  const raw = host.trim().toLowerCase();
+  try {
+    return new URL(`http://${raw}`).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return raw.replace(/^\[|\]$/g, "");
+  }
+}
+
+function requestGuard(req: IncomingMessage): { status: number; error: string } | null {
+  const method = String(req.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const ct = String(req.headers["content-type"] || "").toLowerCase();
+    if (!ct.startsWith("application/json")) {
+      return { status: 415, error: "控制接口只接受 application/json" };
+    }
+  }
+  const host = String(req.headers.host || "").toLowerCase();
+  if (host && !isLoopbackHostName(splitHostPort(host))) {
+    return { status: 403, error: "控制接口只接受回环地址访问" };
+  }
+  const origin = req.headers.origin;
+  if (origin) {
+    let originHost = "";
+    try {
+      originHost = new URL(String(origin)).host.toLowerCase();
+    } catch {
+      originHost = "-";
+    }
+    if (originHost !== host) return { status: 403, error: "已拒绝跨站请求" };
+  }
+  return null;
+}
+
 const control = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const pathname = url.pathname;
   try {
+    const blocked = requestGuard(req);
+    if (blocked) return json(res, blocked.status, { ok: false, error: blocked.error });
     if (req.method === "GET" && pathname === "/status") {
       const active = activeSession();
       return json(res, 200, {
@@ -1179,7 +1232,7 @@ const control = createServer(async (req, res) => {
         active: active ? { ...active.info(), authenticated: !!active.authUser, username: active.authUser?.username || null } : null,
         sessions: [...sessions.values()].map((meta, i) => {
           const s = [...sessions.keys()][i];
-          return { address: meta.address, connectedAt: meta.connectedAt, ...s.info(), authenticated: !!s.authUser, username: s.authUser?.username || null };
+          return { ...s.info(), address: meta.address, connectedAt: meta.connectedAt, authenticated: !!s.authUser, username: s.authUser?.username || null };
         }),
         stats: aggregatedStats(),
         structure: {
@@ -1387,23 +1440,21 @@ const control = createServer(async (req, res) => {
       } catch {
         return json(res, 400, { ok: false, error: "文件数据不是合法的 Base64" });
       }
-      if (buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
-        return json(res, 200, { ok: false, fixed: false, issues: [], error: "修补功能仅支持 .mcstructure（投影文件本身就是标准格式，不需要修补）" });
-      }
       const r = repairMcStructure(buf, name);
       if (!r.ok || !r.parsed || !r.data) {
         logError(`修补结构「${name}」失败：${r.error ?? "未知错误"}${r.issues.length ? `（${r.issues.join("；")}）` : ""}`);
-        return json(res, 200, { ok: false, fixed: r.fixed, issues: r.issues, error: r.error ?? "修补失败" });
+        return json(res, 200, { ok: false, fixed: r.fixed, lossy: r.lossy, issues: r.issues, error: r.error ?? "修补失败" });
       }
       pendingStructure = r.parsed;
       pendingUploadedAt = Date.now();
       log(
-        `修补结构「${name}」：${r.fixed ? `修复 ${r.issues.length} 处问题` : "文件本来就规范"}，` +
+        `修补结构「${name}」：${r.fixed ? `修复 ${r.issues.length} 处问题${r.lossy ? "（有损）" : ""}` : "文件本来就规范"}，` +
           `尺寸 ${r.parsed.size.x}×${r.parsed.size.y}×${r.parsed.size.z}，${r.parsed.total} 方块`
       );
       return json(res, 200, {
         ok: true,
         fixed: r.fixed,
+        lossy: r.lossy,
         issues: r.issues,
         structure: {
           name: r.parsed.name,

@@ -216,7 +216,8 @@
     const tick = async () => {
       try {
         const s = await (await fetch("/api/status")).json();
-        const b = s && s.structure && s.structure.build;
+        // /api/status 把控制口的 status 放在 s.ws 下；直接读 s.structure 会永远拿不到进度
+        const b = s && s.ws && s.ws.structure && s.ws.structure.build;
         if (!b) return;
         const pct = b.total ? Math.floor((b.placed / b.total) * 100) : 0;
         $("px-name").textContent = `导入中：${b.name} · ${b.placed}/${b.total}（${pct}%）· ${b.stepLabel || ""}`;

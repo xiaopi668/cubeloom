@@ -8,9 +8,12 @@
     "start:node": "tsx main.ts",
     "ws": "tsx main.ts",
     "admin": "tsx admin-server.ts",
+    "netease": "tsx netease-service.ts",
     "cli": "node cli.mjs",
     "set-password": "node tools/set-password.mjs",
-    "check:sandbox": "tsx tools/check-sandbox.ts"
+    "check:sandbox": "tsx tools/check-sandbox.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "repository": {
     "type": "git",
@@ -24,10 +27,13 @@
   "homepage": "https://github.com/xiaopi668/cubeloom#readme",
   "dependencies": {
     "@pureeval/voxel-geometry": "1.2.10",
-    "mcpews": "^4.0.0"
+    "mcpews": "^4.0.0",
+    "tsx": "^4.20.6",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
-    "tsx": "^4.20.6"
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3"
   },
   "keywords": [
     "minecraft",

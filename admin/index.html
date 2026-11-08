@@ -908,13 +908,16 @@
       repairedDataB64 = r.data;
       repairedName = (r.structure && r.structure.name ? r.structure.name : "repaired") + "-repaired";
       renderStructureInfo(r.structure);
+      const lossyTip = r.lossy
+        ? "\n\n⚠ 本次修补是有损的：方块索引/名称发生过改动，下载前请核对上面的问题清单。"
+        : "";
       reportEl.textContent = r.fixed
-        ? "已修复 " + r.issues.length + " 处问题：\n· " + r.issues.join("\n· ")
-        : "文件本来就规范，无需修补（已生成标准格式副本）";
+        ? "已修复 " + r.issues.length + " 处问题：\n· " + r.issues.join("\n· ") + lossyTip
+        : "文件本来就规范，无需修补（下载的副本与原件一致）。" + lossyTip;
       downloadBtn.style.display = "";
       addEntry("修补结构文件", {
         ok: true,
-        result: { text: (r.structure ? r.structure.name + "：" : "") + (r.fixed ? "已修复 " + r.issues.length + " 处" : "无需修补") },
+        result: { text: (r.structure ? r.structure.name + "：" : "") + (r.fixed ? "已修复 " + r.issues.length + " 处" + (r.lossy ? "（有损）" : "") : "无需修补") },
       });
       refreshStatus();
     } catch (e) {

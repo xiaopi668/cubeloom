@@ -10,11 +10,14 @@
 然后由它**替你一块一块地放方块**：既可以导入现成建筑文件，也可以用代码现场"算"出形状。
 
 ```
-npm i -g cubeloom          # 或 npx cubeloom
-cubeloom admin             # 网页控制台 http://127.0.0.1:11452
-cubeloom ws                # 只跑 WS 服务（11451）
-cubeloom cli               # 终端交互版
+git clone https://github.com/xiaopi668/cubeloom.git && cd cubeloom
+npm install
+npm run admin              # 网页控制台 http://127.0.0.1:11452
+npm run ws                 # 只跑 WS 服务（11451）
+npm run cli                # 终端交互版
 ```
+
+> 尚未发布到 npm（`package.json` 里没有 `bin` 入口），请用仓库内脚本启动。
 
 许可证：**AGPL-3.0-or-later**。见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
 
@@ -75,16 +78,174 @@ lsystem("X", { X: "XFYFX+F+YFXFY-F-XFXFY", Y: "YFXFY-F-XFXFY+F+YFXFY" }, 5)
 
 变换器：`scale` / `move` / `swap` / `pipe` / `embed` / `diffusion` / `array_gen`。
 
+## 手机上用
+
+`/connect`（别名 `/wsserver`）是基岩版客户端自带的命令，手机版一样能用，但有两条硬要求：
+**世界要开作弊**（单机），或者**你在服务器里是管理员**（权限等级 2）；另外它不能写进命令方块。
+
+### 方式一：电脑跑服务，手机连（最常用）
+
+1. 电脑上启动服务：
+
+   ```bash
+   npm run admin        # 面板 + WS 一起（WS 在 11451）
+   # 或者只起 WS
+   npm run ws
+   ```
+
+   启动日志里记下两行：
+
+   ```
+   WS 服务已启动：ws://[::]:11451
+   外部连接令牌：xxxxxxxxxxxx
+   ```
+
+2. 查电脑的局域网 IP：
+
+   | 系统 | 命令 |
+   |---|---|
+   | Windows | `ipconfig` → 看「IPv4 地址」 |
+   | macOS | `ipconfig getifaddr en0` |
+   | Linux | `ip addr show` → 找 `192.168.x.x` 或 `10.x.x.x` |
+
+3. 手机和电脑连**同一个 Wi-Fi**。访客网络、AP 隔离、公司网络常常互相 ping 不通，先排除这些。
+
+4. 手机进游戏，在聊天栏：
+
+   ```
+   /connect ws://192.168.1.23:11451
+   --login xxxxxxxxxxxx          # 非本机连接必须先验证
+   -pos()                        # 把当前位置记为原点
+   -plot(sphere(3,0))            # 放一个半径 3 的球
+   ```
+
+   令牌就是启动日志里那串；想固定下来：`FB_LOCAL_TOKEN=mysecret npm run ws`。
+
+5. 连不上先看防火墙：
+
+   - Windows 首次启动会弹「是否允许 Node.js 访问网络」，必须勾**专用网络**；没弹出来就手动放行：
+     ```powershell
+     netsh advfirewall firewall add rule name="Cubeloom WS" dir=in action=allow protocol=TCP localport=11451
+     ```
+   - Linux：`sudo ufw allow 11451/tcp`（firewalld 用 `firewall-cmd --add-port=11451/tcp`）
+
+6. 手机浏览器也想看管理面板？面板默认只听 `127.0.0.1`，手机打不开，要显式放开：
+
+   ```bash
+   npm run set-password                     # 先设口令（写 admin/auth.json，scrypt 哈希）
+   FB_ADMIN_HOST=0.0.0.0 npm run admin      # Linux / macOS
+   # Windows cmd:        set FB_ADMIN_HOST=0.0.0.0 && npm run admin
+   # Windows PowerShell: $env:FB_ADMIN_HOST="0.0.0.0"; npm run admin
+   ```
+
+   然后手机浏览器开 `http://192.168.1.23:11452`，用刚设的口令登录（防火墙同样要放行 11452）。
+
+   > 面板里有「执行沙箱代码」入口，绑到 `0.0.0.0` 又不设口令，等于把电脑的代码执行权交给整个局域网。
+   > 启动时如果检测到这种情况，控制台会打警告。
+
+### 方式二：手机自己跑服务（Termux / Android）
+
+```bash
+pkg install nodejs git
+git clone https://github.com/xiaopi668/cubeloom.git
+cd cubeloom
+npm install
+FB_NO_OPEN=1 npm run admin     # 面板 + WS 一起起；只要 WS 就换成 npm run ws（面板不会起）
+```
+
+同一台手机上进游戏：`/connect ws://127.0.0.1:11451`（回环连接免验证），浏览器开 `http://127.0.0.1:11452` 看面板。
+
+- 先执行 `termux-wake-lock`，否则息屏后进程会被系统杀掉
+- 十万级方块的导入在手机上会明显发热、变慢，建议先用小结构试水
+- Termux 里的 `npm install` 需要 Node ≥ 20，`pkg install nodejs` 通常就够
+
+### 手机连不上的排查顺序
+
+| 现象 | 先查 | 处理 |
+|---|---|---|
+| 一直「正在连接」 | 手机能否 ping 通电脑 IP；端口是否被防火墙拦 | 放行 11451；关掉访客网络/AP 隔离 |
+| 连上后 `-` 命令没反应 | 有没有先发 `--login <令牌>` | 发令牌；**注意令牌区分大小写** |
+| 聊天栏没有 `/connect` | 世界没开作弊 / 不是管理员 | 世界设置里开「作弊」，或让服主给你 OP |
+| 面板打不开 | 面板默认只绑 `127.0.0.1` | 按上面方式一第 6 步放开并设口令 |
+| 连接后被踢、提示版本不符 | 客户端版本太新/太旧 | 用 `FB_WS_VERSION` 调整协议版本后重启 |
+
+## 网易版（租赁服 / 互通服）
+
+网易版客户端用不了 `/connect`，所以走另一条路：**机器人以玩家身份进服**，Cubeloom 把算好的指令经事件桥交给机器人执行。
+
+```
+结构文件 ──HTTP──> netease-service.ts (11454) ──UNIX socket──> 机器人事件桥 ──RakNet──> 网易租赁服
+                          ▲
+                   admin-server 反代 /api/netease/*
+```
+
+### 前提
+
+| 项 | 要求 |
+|---|---|
+| 机器人本体 | **需要自备**，本仓库不含（参考 [lurete-cn/NTvector](https://github.com/lurete-cn/NTvector)） |
+| 机器人账号 | 必须是目标服的 **OP**，或服务器开启了作弊，否则指令无效 |
+| 运行平台 | Linux / macOS（事件桥走 UNIX socket；Windows 请用 WSL） |
+| 协议基线 | MCBE 1.21.130 / 协议 898，可用 `FB_NETEASE_PROTOCOL` 覆盖，详见 [docs/NETEASE_PROTOCOL.md](docs/NETEASE_PROTOCOL.md) |
+
+### 配置
+
+```bash
+cp netease/netease.env.example netease/netease.env
+chmod 600 netease/netease.env
+# 填两项：
+#   FB_NETEASE_SOCKET=/opt/netease-bot/bot.sock   # 机器人事件桥的 socket 路径
+#   FB_NETEASE_TOKEN=xxxx                          # 事件桥 token
+```
+
+机器人侧按 `netease/config.json.example`（房间号/密码）和 `netease/mc.cfg.example`（`sauth` 登录凭证）填写，
+这两份是**账号凭据**，权限设 600，别提交到仓库（`.gitignore` 已忽略 `netease/*.env`、`netease/config.json`、`netease/mc.cfg`）。
+
+### 启动
+
+```bash
+set -a; . ./netease/netease.env; set +a   # 载入环境变量（Windows 用 set 或写进 systemd）
+npm run netease
+```
+
+另外起一个 `npm run admin` 打开面板（11452），「网易版（机器人 · 事件桥）」区会显示：
+
+```
+事件桥已连接 · 机器人 xxx · 服务器 x.x.x.x:xxxx · 协议 898（1.21.130）
+```
+
+### 使用
+
+选 `.mcstructure` → 上传解析 → 「在网易服里导入」，自动跑三步：
+
+1. **放置**：按 `FB_NETEASE_RATE`（默认 5 条/秒）限速下发 `setblock` / `fill`
+2. **校验**：对表面抽样点发**幂等 setblock**（已经是目标方块算通过，缺的直接补上）
+3. **完成**：报告通过 / 失败数量，进度同时推到面板和游戏内 actionbar
+
+### 关键限制（实测）
+
+- **不能用 `testforblock` 回读**：网易服会判 `bad_packet`（reason=90）踢线，所以校验用幂等 `setblock` 的回执代替
+- **指令必须限速**：突发大量指令会被判「违规游戏行为」（reason=55）踢线；默认 5 条/秒，可用 `FB_NETEASE_RATE` 调，越低越稳
+- 被踢后约 60 秒自动重连，重连后事件桥自动恢复
+- 64×64×64（约 26 万方块）按 5 条/秒要跑约 15 分钟；**先用小结构确认原点和朝向**
+- 和 WS 版一样只还原方块 ID，不还原方块状态（朝向/半砖/告示牌文字）
+- 网易版服务和 WS 版互不影响，可以同时跑（11454 / 11451 两个端口）
+
 ## 安全说明
 
 聊天栏 `-` 命令会在服务端执行 JavaScript，这是本项目的核心玩法，也因此必须说清边界：
 
-- 沙箱基于 `node:vm` 独立上下文：拿不到 `process` / `require` / `Buffer`，禁用了 `Function` 与 `eval` 的字符串构造，单条命令默认 5 秒超时（`FB_SANDBOX_TIMEOUT`）
-- **这不是完整隔离**。注入给脚本的 `plot` / `setBlocks` 是宿主对象，理论上可以顺着原型链摸到宿主 `Function`。要做到彻底隔离，需要把执行搬进 `worker_threads` 或子进程
+- 沙箱基于 `node:vm` 独立上下文：脚本里直接 `process` / `require` / `Buffer` 不可达，字符串构造（`Function` / `eval`）被禁用，单条命令默认 5 秒超时（`FB_SANDBOX_TIMEOUT`）
+- **这不是安全边界，已实测可逃逸**：注入的 `plot` / `setBlocks` 是宿主对象，
+  `plot.constructor('return process')().getBuiltinModule('child_process').execSync('id')` 就能在宿主上执行命令。
+  因此「能发 `-` 命令 / 能调控制接口」等同于「能在跑服务的这台机器上执行任意代码」。
+  彻底隔离需要把执行搬进 `worker_threads` 或子进程，只回传方块数据——目前尚未实现
 - 认证默认值：本机（`127.0.0.1` / `::1`）连接免验证；**局域网或公网设备连进来必须先发 `--login <令牌>`**，令牌在启动日志里打印，可用 `FB_LOCAL_TOKEN` 固定
 - 要让所有来源都免验证（不推荐）：`FB_ALLOW_ANON=1`
 
-自测：`npm run check:sandbox`（27 项断言，覆盖隔离、API 未回退、鉴权优先级）。
+自测：`npm run check:sandbox`（39 项断言，覆盖隔离、API 未回退、鉴权优先级、落块层与回显层）。
+
+> 维护与风险清单：见 [docs/维护手册.md](docs/维护手册.md)。
 
 ## 目录
 
@@ -96,8 +257,10 @@ netease-service.ts   网易版事件桥
 src/                 结构解析 / NBT / 格式 / 沙箱 / 会话
 admin/               面板前端（原生 HTML/CSS/JS，无构建）
 deploy/              systemd 单元模板
-docs/                协议基线、CLI 说明、移植笔记
+docs/                协议基线、CLI 说明、移植笔记、维护手册与风险清单
 tools/               set-password.mjs、check-sandbox.ts
+test/                数据层回归测试（node --test：修补器 / 坐标契约 / 解析）
+tsconfig.json        类型检查配置（npm run typecheck）
 ```
 
 ## 与上游的关系

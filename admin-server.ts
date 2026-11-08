@@ -461,12 +461,75 @@ const MIME: Record<string, string> = {
   ".ico": "image/x-icon",
 };
 
+/**
+ * 面板请求守卫：挡 CSRF 与 DNS rebinding。
+ *
+ * 面板可能被显式配置成对局域网开放（FB_ADMIN_HOST=0.0.0.0），所以 Host 白名单
+ * 是"回环 + 本机网卡 IP 字面量 + localhost"；域名形式一律拒绝——那是 rebinding。
+ * 写操作必须是 application/json；带 Origin 时必须与 Host 同源。
+ */
+const LOCAL_HOST_NAMES: Set<string> = (() => {
+  const set = new Set<string>(["localhost", "::1", "0:0:0:0:0:0:0:1", "127.0.0.1"]);
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a?.address) set.add(a.address.toLowerCase());
+    }
+  }
+  const configured = String(process.env.FB_ADMIN_HOST || "").trim().toLowerCase();
+  if (configured && !/^\d+\.\d+\.\d+\.\d+$/.test(configured) && configured !== "::") set.add(configured);
+  return set;
+})();
+
+/** 从 Host 头取出主机名：兼容 127.0.0.1:11452 / [::1]:11452 / host:port */
+function hostNameOf(host: string): string {
+  const raw = host.trim().toLowerCase();
+  try {
+    return new URL(`http://${raw}`).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return raw.replace(/^\[|\]$/g, "");
+  }
+}
+
+function isLocalHostName(name: string): boolean {
+  const n = name.toLowerCase().replace(/%.*$/, "");
+  if (LOCAL_HOST_NAMES.has(n)) return true;
+  return /^127\./.test(n) || n.endsWith(".localhost");
+}
+
+function requestGuard(req: IncomingMessage): { status: number; error: string } | null {
+  const method = String(req.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const ct = String(req.headers["content-type"] || "").toLowerCase();
+    if (!ct.startsWith("application/json")) {
+      return { status: 415, error: "接口只接受 application/json" };
+    }
+  }
+  const host = String(req.headers.host || "").toLowerCase();
+  const hostName = hostNameOf(host);
+  if (host && !isLocalHostName(hostName)) {
+    return { status: 403, error: "已拒绝非本机地址访问（域名访问被禁止）" };
+  }
+  const origin = req.headers.origin;
+  if (origin) {
+    let originHost = "";
+    try {
+      originHost = new URL(String(origin)).host.toLowerCase();
+    } catch {
+      originHost = "-";
+    }
+    if (originHost !== host) return { status: 403, error: "已拒绝跨站请求" };
+  }
+  return null;
+}
+
 /** ===== 路由 ===== */
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const p = url.pathname;
 
   try {
+    const blocked = requestGuard(req);
+    if (blocked) return sendJson(res, blocked.status, { ok: false, error: blocked.error });
     // ---- 登录校验（admin/auth.json 存在时启用；口令只存 scrypt 哈希） ----
     if (auth) {
       const authed = isValidSession(readCookie(req, "cq_session"));
@@ -1056,6 +1119,10 @@ server.listen(ADMIN_PORT, ADMIN_HOST, async () => {
   log(`===== ${APP_NAME} 管理端启动 =====`);
   log(`网页管理页：http://${ADMIN_HOST === "0.0.0.0" ? "0.0.0.0" : ADMIN_HOST}:${ADMIN_PORT}` +
     (auth ? "（已启用密码登录）" : "（未设置密码，本机开发模式）"));
+  const loopbackOnly = ADMIN_HOST === "127.0.0.1" || ADMIN_HOST === "::1" || ADMIN_HOST === "localhost";
+  if (!loopbackOnly && !auth) {
+    log("[警告] 面板已绑定非回环地址且没有口令：局域网内任何人都能执行沙箱代码，请先运行 npm run set-password");
+  }
   refreshPublicIp().then(() => {
     if (SYS.publicIp) log(`公网 IP：${SYS.publicIp}（本机地址：${SYS.localIps.join("，") || "—"}）`);
   });

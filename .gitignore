@@ -1,0 +1,27 @@
+# 依赖
+node_modules/
+
+# 运行时产物
+logs/
+*.log
+
+# 管理端口令哈希（scrypt）与本地会话数据，绝不入库
+admin/auth.json
+admin/auth.json.*
+data/
+*.local
+
+# 网易版桥接的真实配置（示例文件 *.example 需要保留）
+netease/netease.env
+netease/config.json
+netease/mc.cfg
+
+# 构建/编辑器
+dist/
+build/
+coverage/
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

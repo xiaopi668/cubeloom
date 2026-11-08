@@ -29,6 +29,12 @@ jobs:
       - name: 沙箱与鉴权自测
         run: npm run check:sandbox
 
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 单元测试（修补器 / 坐标契约 / 解析）
+        run: npm test
+
       - name: 启动冒烟测试
         run: |
           set -o pipefail
@@ -46,3 +52,26 @@ jobs:
           test -f LICENSES/CyanQiuper-MIT.txt
           head -3 LICENSE | grep -q "GNU AFFERO GENERAL PUBLIC LICENSE"
           ! grep -rIl "site-server" --include="*.ts" src main.ts admin-server.ts
+
+  prod-install:
+    name: 生产安装（--omit=dev）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: 只装生产依赖
+        run: npm ci --omit=dev --no-audit --no-fund
+      - name: 校验运行时的 tsx / ws 都在
+        run: |
+          test -f node_modules/tsx/dist/cli.mjs
+          node -e "require.resolve('ws')"
+          node node_modules/tsx/dist/cli.mjs --version
+      - name: 生产依赖下启动冒烟
+        run: |
+          set -o pipefail
+          FB_WS_PORT=11451 FB_CONTROL_PORT=11453 FB_JAVA_PORT=11454 \
+            timeout 10 node node_modules/tsx/dist/cli.mjs main.ts 2>&1 | tee /tmp/prod-boot.log || true
+          grep -q "WS 服务已启动" /tmp/prod-boot.log

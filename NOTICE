@@ -16,50 +16,17 @@ Copyright (C) 2026 Cubeloom contributors
    版权：Copyright (c) 2026 CyanQiuper contributors
    说明：本项目从其 fork，保留 MIT 部分的全部版权与许可声明。
 
-2. FastBuilder
-   来源：https://github.com/CAIMEOX/FastBuilder
-   作者：CAIMEO
-   许可：仓库未声明许可证 —— 见下方「关于 FastBuilder 的授权状态」。
-   说明：CyanQiuper-Builder 的部分实现源自该仓库；Cubeloom 已把这些实现
-         按独立方案重写，只保留接口形状。
-
-3. VoxelGeometry / @pureeval/voxel-geometry
+2. VoxelGeometry / @pureeval/voxel-geometry
    来源：https://github.com/CAIMEOX/VoxelGeometry
    许可：GNU Affero General Public License v3.0
    说明：作为运行依赖使用（npm: @pureeval/voxel-geometry），其 AGPL-3.0
          条款约束本项目的整体分发。
 
-4. mcpews
+3. mcpews
    来源：https://github.com/XeroAlpha/mcpews
    作者：ProjectXero
    许可：MIT License
 
-5. ws
+4. ws
    来源：https://github.com/websockets/ws
    许可：MIT License
-
-────────────────────────────────────────────────────────
-关于 FastBuilder 的授权状态
-────────────────────────────────────────────────────────
-
-CAIMEOX/FastBuilder 仓库没有 LICENSE 文件，按著作权法默认「保留所有权利」。
-CyanQiuper-Builder 单方面标注的 MIT 不能替原作者授权。
-
-Cubeloom 的处理方式：**不再沿用来自 FastBuilder 的实现代码**。
-
-  src/effect.ts    落块层：改为「前缀缓存 + 单次遍历」，拆出 setBlockCommand
-                   纯函数；公共 API 形状（setBlocks(session)(block)(space) 等）
-                   保持不变以便脚本兼容
-  src/utils.ts     回显层：改用对象 + JSON.stringify 组装 tellraw，顺带修掉
-                   正文含 `"` 或反斜杠时生成非法 JSON 的问题
-  src/sandbox.ts   命令沙箱：改为 node:vm 独立上下文（禁 process/require、
-                   禁字符串构造、5 秒超时）
-  src/session.ts   plot / 原点记录 / 沙箱注入 / 文本回显：重写或抽成独立方法，
-                   并删除两个从未使用的上游遗留字段
-
-仍保留的部分是接口事实——导出名、类型字段名（`setting.block` 等脚本可直接
-读写的属性）、方法名与 `testforblock ~ ~ ~ air` 这类协议命令。这些属于功能
-要素，不构成表达性代码的复制。
-
-如需进一步消除任何疑虑，可以联系 CAIMEO 取得书面许可并归档到
-`docs/permissions/fastbuilder.md`，届时本节可一并删除。

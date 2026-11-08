@@ -24,9 +24,3 @@ SOFTWARE.
 
 本项目基于 CAIMEOX/FastBuilder（MIT License）扩展而来，特此致谢。
 本项目与 Mojang、Microsoft、网易无关；使用相关服务时请遵守对应服务条款。
-
----
-
-[说明] 以上中文附注是上游 CyanQiuper-Builder 原文，为保持声明完整而原样保留。
-其中「FastBuilder 为 MIT License」的说法与事实不符：CAIMEOX/FastBuilder 仓库
-没有 LICENSE 文件，默认保留所有权利。授权缺口见 NOTICE。

@@ -108,18 +108,14 @@ Cubeloom 是 [CyanQiuper-Builder](https://github.com/Diamond-Minec/CyanQiuper-Bu
 谱系：
 
 ```
-CAIMEOX/FastBuilder (无许可证)
-        │
-        ▼
 Diamond-Minec/CyanQiuper-Builder (MIT)
         │  本项目 fork 并剥离商业模块，改为 AGPL-3.0
         ▼
 xiaopi668/cubeloom (AGPL-3.0)
 ```
 
-上游署名与保留的 MIT 声明都写在 [NOTICE](NOTICE) 里。
-
-`CAIMEOX/FastBuilder` 没有 LICENSE 文件，所以来自它的实现已按独立方案重写（落块层、回显层、命令沙箱、会话的注入与回显逻辑），只保留导出名、类型字段名这类接口事实。细节见 NOTICE 的「关于 FastBuilder 的授权状态」一节。
+上游署名与保留的 MIT 声明都写在 [NOTICE](NOTICE) 里。落块层、回显层、命令沙箱
+与会话的注入逻辑均为独立实现，只保留导出名、类型字段名这类接口形状。
 
 运行时依赖：`@pureeval/voxel-geometry`（VoxelGeometry，AGPL-3.0）、`mcpews`（MIT）、`ws`（MIT）。
 

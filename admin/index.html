@@ -279,7 +279,9 @@
     </section></div><div class="stack"><section class="panel" id="panel-nte-account">
       <h2>机器人账号 / 房间</h2>
       <div class="log-info" style="margin-bottom:8px; white-space:normal">
-        填写 NTvector 的 mc.cfg。token 需要从启动器导出（Base64），也可以直接把已有 mc.cfg 粘到下面。
+        NTvector 只认启动器导出的 <b>mc.cfg</b>（里面含房间 IP/端口、user_id、token）。
+        普通玩家只看到「房间号」，拿不到 IP —— 用启动器登录一次，导出/复制它的 mc.cfg，
+        点下面「导入 mc.cfg 文件」或直接粘贴 JSON，再点保存即可。
       </div>
       <div class="sl-form">
         <input id="nte-cfg-ip" type="text" placeholder="房间 IP" />
@@ -291,6 +293,10 @@
         <textarea id="nte-cfg-json" class="full" rows="9" spellcheck="false"
           style="background:var(--code-bg); color:var(--fg); border:1px solid var(--line-2); border-radius:8px; padding:10px; font-family:var(--mono); font-size:12px; width:100%; resize:vertical"
           placeholder="完整 mc.cfg JSON"></textarea>
+      </div>
+      <div class="sl-row" style="margin-bottom:8px">
+        <input id="nte-cfg-file" type="file" accept=".cfg,.json,application/json,text/plain" />
+        <span class="log-info">选择启动器导出的 mc.cfg</span>
       </div>
       <div class="sl-row">
         <button class="btn accent small" id="nte-cfg-save">保存配置</button>
@@ -836,6 +842,34 @@
     setTimeout(nteLoadConfig, 800);
     setTimeout(nteRefresh, 1200);
   }
+
+  async function nteImportCfgFile(file) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const cfg = JSON.parse(text);
+      if (!cfg || typeof cfg !== "object") throw new Error("不是 JSON 对象");
+      $("nte-cfg-json").value = JSON.stringify(cfg, null, 2);
+      const room = cfg.room_info || {};
+      const p = cfg.player_info || {};
+      $("nte-cfg-ip").value = room.ip || "";
+      $("nte-cfg-port").value = room.port || 19132;
+      $("nte-cfg-uid").value = p.user_id || "";
+      $("nte-cfg-uname").value = p.user_name || "";
+      $("nte-cfg-opname").value = p.operator_name || "";
+      $("nte-cfg-token").value = p.token || "";
+      $("nte-svc-state").textContent = `已导入 ${file.name}，确认无误后点「保存配置」`;
+    } catch (e) {
+      $("nte-svc-state").textContent = "导入失败：" + (e && e.message ? e.message : e);
+    }
+  }
+
+  document.getElementById("nte-cfg-file").onchange = (ev) => {
+    const input = ev.target;
+    const file = input.files && input.files[0];
+    nteImportCfgFile(file);
+    input.value = "";
+  };
 
   document.getElementById("nte-cfg-save").onclick = nteSaveConfig;
   document.getElementById("nte-svc-start").onclick = () => nteServiceAction("start");

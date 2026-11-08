@@ -5,6 +5,7 @@ import { parseMcStructure, structureCommands, ParsedStructure } from "./src/stru
 import { parseStructureFile } from "./src/formats";
 import { repairMcStructure } from "./src/structure-repair";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { InFlightTracker, waitForIdle } from "./src/sender";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -56,9 +57,19 @@ const retired = { commands: 0, setblocks: 0, messages: 0, errors: 0 };
 let totalConnections = 0;
 
 function activeSession(): Session | null {
+  // 只认握手完成（ready）的会话：没完成加密握手的连接不能顶掉正常会话（P1-6）
   let last: Session | null = null;
-  for (const s of sessions.keys()) last = s;
+  for (const s of sessions.keys()) {
+    if ((s as any).ready) last = s;
+  }
   return last;
+}
+
+/** 回环地址判定（与 src/session.ts 保持一致；这里只用于识别反向代理） */
+function isLoopbackAddress(addr?: string): boolean {
+  if (!addr) return false;
+  const a = addr.replace(/^::ffff:/i, "");
+  return a === "::1" || a === "127.0.0.1" || a.startsWith("127.");
 }
 
 /** 只有已通过 --login 验证的会话才允许操作 */
@@ -114,6 +125,7 @@ const HUD_BAR = 16;
 const SEND_WINDOW_MAX = Math.max(4, Number(process.env.FB_SEND_WINDOW ?? 48));
 const SEND_WINDOW_MIN = Math.max(1, Number(process.env.FB_SEND_WINDOW_MIN ?? 8));
 const SEND_TICK_MS = Math.max(4, Number(process.env.FB_SEND_TICK ?? 12));
+const SEND_STALL_MS = Math.max(1000, Number(process.env.FB_SEND_STALL ?? 8000));
 const SEND_SAMPLE_MS = Math.max(100, Number(process.env.FB_SEND_SAMPLE ?? 400));
 const SEND_FAIL_RATIO = Math.min(1, Math.max(0.01, Number(process.env.FB_SEND_FAIL_RATIO ?? 0.05)));
 type HudState = {
@@ -335,27 +347,14 @@ function startStructureBuild(offsetY: number) {
   s.chat(`§e开始导入结构「${st.name}」：${st.size.x}×${st.size.y}×${st.size.z}，共 ${st.total} 方块`);
   actionbarProgress(st.name, 0, st.total);
 
-  let inFlight = 0;
   let failedQueue: StructureCmd[] = [];
-
-  /** 等当前批次的回执全部回来（最多 8 秒，超时按未确认处理） */
-  const waitIdle = (cb: () => void) => {
-    const started = Date.now();
-    const check = () => {
-      if (!build || build.cancelled) return;
-      if (inFlight <= 0) return cb();
-      if (Date.now() - started > 8000) {
-        logError(`等待游戏回执超时（还有 ${inFlight} 条未响应），按未确认处理`);
-        return cb();
-      }
-      setTimeout(check, 80);
-    };
-    setTimeout(check, 120);
-  };
 
   const sendBatch = (list: StructureCmd[], onDone: () => void, isRetry: boolean) => {
     let idx = 0;
     let lastBar = 0;
+    // 每轮独立追踪：上一轮没回来的回执不能占住这一轮的窗口（P1-5）
+    const tracker = new InFlightTracker();
+    let lastProgress = Date.now();
     // 初速：首轮全速；补建轮从半速开始，避免再次过载
     let window = isRetry ? Math.max(SEND_WINDOW_MIN, Math.floor(SEND_WINDOW_MAX / 3)) : SEND_WINDOW_MAX;
     let sentSinceSample = 0;
@@ -375,10 +374,22 @@ function startStructureBuild(offsetY: number) {
         return;
       }
 
+      if (tracker.abandonedRound) return;
+
+      // 窗口占满且长时间没有任何回执：说明对端丢了回执，别空转（P1-5）
+      if (tracker.inFlight > 0 && Date.now() - lastProgress > SEND_STALL_MS) {
+        const lost = tracker.abandon();
+        failedQueue.push(...lost);
+        logError(`发送停滞 ${SEND_STALL_MS}ms：${lost.length} 条命令未回执，转入补建`);
+        onDone();
+        return;
+      }
+
       // 以「在途命令数」为闸门：窗口没满就继续发，把管道喂饱
-      while (idx < list.length && inFlight < window) {
+      while (idx < list.length && tracker.inFlight < window) {
         const c = list[idx++];
-        inFlight++;
+        tracker.track(c);
+        lastProgress = Date.now();
         build.sent++;
         sentSinceSample++;
         if (isRetry) {
@@ -389,7 +400,8 @@ function startStructureBuild(offsetY: number) {
         }
         try {
           sess.session.sendCommand(c.command, ({ body }: any) => {
-            inFlight = Math.max(0, inFlight - 1);
+            if (!tracker.ack(c)) return; // 本轮已超时放弃 / 重复回执
+            lastProgress = Date.now();
             if (!build) return;
             if (body && body.statusCode === 0) build.confirmed++;
             else {
@@ -398,7 +410,8 @@ function startStructureBuild(offsetY: number) {
             }
           });
         } catch {
-          inFlight = Math.max(0, inFlight - 1);
+          tracker.ack(c);
+          lastProgress = Date.now();
           failedSinceSample++;
           failedQueue.push(c);
         }
@@ -411,7 +424,7 @@ function startStructureBuild(offsetY: number) {
         if (ratio > SEND_FAIL_RATIO) {
           window = Math.max(SEND_WINDOW_MIN, Math.floor(window * 0.7));
           logError(`发送失败率 ${(ratio * 100).toFixed(1)}%，降速：窗口 ${window}`);
-        } else if (window < SEND_WINDOW_MAX && inFlight < window * 0.6) {
+        } else if (window < SEND_WINDOW_MAX && tracker.inFlight < window * 0.6) {
           window = Math.min(SEND_WINDOW_MAX, window + 4);
         }
         sentSinceSample = 0;
@@ -428,7 +441,14 @@ function startStructureBuild(offsetY: number) {
       }
 
       if (idx >= list.length) {
-        waitIdle(onDone);
+        waitForIdle({ tracker, timeoutMs: 8000, intervalMs: 80 }).then((lost) => {
+          if (!build || build.cancelled) return;
+          if (lost.length) {
+            failedQueue.push(...lost);
+            logError(`等待游戏回执超时：${lost.length} 条未响应，转入补建`);
+          }
+          onDone();
+        });
         return;
       }
       buildTimer = setTimeout(pump, SEND_TICK_MS);
@@ -948,11 +968,26 @@ server.on("client", ({ session, request }) => {
   }
   connRate.set(ip, rec);
   totalConnections++;
-  const s = Session.create(session, request.socket.remoteAddress);
+  // 反向代理/隧道（cloudflared、nginx、frp…）会让外部连接以 127.0.0.1 进来。
+  // 这类连接带转发头，按"外部"处理，不再享受回环免验证（P1-14）。
+  const fwdRaw = request.headers["cf-connecting-ip"] || request.headers["x-real-ip"] || request.headers["x-forwarded-for"];
+  const forwardedFrom = Array.isArray(fwdRaw) ? fwdRaw[0] : fwdRaw;
+  const behindProxy = !!forwardedFrom && isLoopbackAddress(request.socket.remoteAddress);
+  const s = Session.create(session, request.socket.remoteAddress, { forceAuth: behindProxy });
   s.address = address;
   sessions.set(s, { address, connectedAt: Date.now() });
   log(`游戏已连接：${address}（当前会话 ${sessions.size} 个）`);
+  if (behindProxy) {
+    log(`[安全] 回环连接携带转发头（${String(forwardedFrom).slice(0, 64)}），按外部连接处理：需要 --login`);
+  }
+  const handshakeTimer = setTimeout(() => {
+    if (!s.ready) {
+      logError(`会话握手超时：${address} 15 秒内未完成加密握手，关闭连接`);
+      try { session.socket.close(1008, "handshake timeout"); } catch {}
+    }
+  }, 15000);
   session.socket.on("close", (code: number) => {
+    clearTimeout(handshakeTimer);
     const st = s.stats;
     retired.commands += st.commands;
     retired.setblocks += st.setblocks;
@@ -977,6 +1012,7 @@ class JavaConn {
   session: any;
   gameProps: any = null;
   java = true;
+  ready = true; // Java 通道用令牌换取连接，创建即就绪
   private pending = new Map<string, (r: any) => void>();
   private seq = 0;
 
@@ -1232,7 +1268,7 @@ const control = createServer(async (req, res) => {
         active: active ? { ...active.info(), authenticated: !!active.authUser, username: active.authUser?.username || null } : null,
         sessions: [...sessions.values()].map((meta, i) => {
           const s = [...sessions.keys()][i];
-          return { ...s.info(), address: meta.address, connectedAt: meta.connectedAt, authenticated: !!s.authUser, username: s.authUser?.username || null };
+          return { ...s.info(), address: meta.address, connectedAt: meta.connectedAt, ready: !!(s as any).ready, authenticated: !!s.authUser, username: s.authUser?.username || null };
         }),
         stats: aggregatedStats(),
         structure: {

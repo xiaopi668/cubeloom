@@ -64,6 +64,9 @@ Minecraft 基岩版 WebSocket 结构生成器 + 黑白配色网页后台。
 | --- | --- | --- |
 | `FB_ADMIN_PORT` | 11452 | 管理页端口 |
 | `FB_ADMIN_HOST` | 127.0.0.1 | 管理页绑定地址。默认只监听回环；改成 `0.0.0.0` 前**先设面板口令**（`npm run set-password`），否则等于把代码执行入口开给整个局域网 |
+| `FB_ADMIN_AUTH_FILE` | `admin/auth.json` | 口令文件路径（多实例/测试用） |
+| `FB_ADMIN_ALLOW_NO_AUTH` | 未设 | `1` = 显式允许"非回环 + 无口令"的面板；不设时这种配置会**拒绝启动** |
+| `FB_ADMIN_COOKIE_SECURE` | 未设 | `1` = 强制 Cookie 带 `Secure`（https 反代下也会自动加） |
 | `FB_WS_PORT` | 11451 | WS 服务端口 |
 | `FB_CONTROL_PORT` | 11453 | 控制接口端口 |
 | `FB_WS_VERSION` | 17104896 | WebSocket 协议版本（1.5.0）。换成更老的客户端（如网易版 1.21.1）握手失败时可调 |
@@ -71,7 +74,7 @@ Minecraft 基岩版 WebSocket 结构生成器 + 黑白配色网页后台。
 
 ## 说明
 
-- 管理端接口只监听 `127.0.0.1`，默认不对局域网开放。
+- 管理端接口默认只监听 `127.0.0.1`，不对局域网开放；要开放必须显式设置 `FB_ADMIN_HOST` 且先设口令。
 - 如果 WS 服务是单独启动的（不是管理端拉起的），网页上的「停止/重启」会提示改用 `stop.bat`，只监控不误杀。
 
 ---
@@ -107,7 +110,10 @@ printf '%s' '新口令' | node tools/set-password.mjs --stdin
 systemctl restart cubeloom
 ```
 
-- 登录成功后发 HttpOnly + SameSite=Strict 签名 Cookie，默认 12 小时
+- 登录成功后发 HttpOnly + SameSite=Strict 签名 Cookie（`exp.epoch.mac`），默认 12 小时；https/反代下自动加 `Secure`
+- 每次 `npm run set-password` 都会轮换 secret 并递增 `epoch`，**旧 Cookie 立即失效**
+- 已登录时调用 `POST /api/auth/revoke` 可立即踢掉所有会话（含当前），无需重启面板
+- 启动时的 fail-closed 规则：非回环绑定且 `admin/auth.json` 不存在 → 拒绝启动；文件损坏 → 拒绝启动；只有 `FB_ADMIN_ALLOW_NO_AUTH=1` 才显式放开
 - 同一 IP 5 分钟内错 8 次锁定 5 分钟
 - 本机开发想免登录：删除 `admin/auth.json` 即可
 

@@ -44,8 +44,13 @@ export function gameVersionFor(protocol: number): string {
 }
 
 export type ProtocolCheck = {
-  /** ok = 完全匹配；warn = 低于目标但仍在支持范围；error = 过低或未上报 */
-  level: "ok" | "warn" | "error";
+  /**
+   * ok      = 完全匹配
+   * warn    = 低于目标但仍在支持范围（或未上报）
+   * newer   = 比目标新（能跑，但项目没验证过；需要时把基线提到该版本）
+   * error   = 低于最低支持
+   */
+  level: "ok" | "warn" | "newer" | "error";
   expected: number;
   bot: number | null;
   botGameVersion: string | null;
@@ -57,11 +62,18 @@ export type ProtocolCheck = {
  * 检查机器人上报的协议版本是否与基线兼容
  * @param botProtocol 机器人端上报的协议号（没有则为 null）
  * @param botGameVersion 机器人端上报的游戏版本（可选）
+ * @param env 读取 FB_NETEASE_PROTOCOL 覆盖用的环境（默认 process.env，测试可传空对象）
  */
-export function checkBotProtocol(botProtocol?: number | null, botGameVersion?: string | null): ProtocolCheck {
-  const expected = effectiveProtocolVersion();
+export function checkBotProtocol(
+  botProtocol?: number | null,
+  botGameVersion?: string | null,
+  env: NodeJS.ProcessEnv = process.env
+): ProtocolCheck {
+  const expected = effectiveProtocolVersion(env);
   const targetGameVersion = gameVersionFor(expected);
   const bot = botProtocol && Number.isFinite(botProtocol) ? Math.trunc(botProtocol) : null;
+  /** 机器人版本的可读写法：优先它自己上报的，其次查表，最后老实写"版本未知" */
+  const botVersionText = (protocol: number) => botGameVersion || PROTOCOL_VERSION_TABLE[protocol] || "版本未知";
 
   if (bot === null) {
     return {
@@ -83,15 +95,28 @@ export function checkBotProtocol(botProtocol?: number | null, botGameVersion?: s
       message: `协议匹配：MCBE ${botGameVersion || gameVersionFor(bot)}（协议 ${bot}）`,
     };
   }
+  if (bot > expected) {
+    // 比目标新 ≠ 低于目标：能跑，但本项目没在该版本上验证过
+    return {
+      level: "newer",
+      expected,
+      bot,
+      botGameVersion: botGameVersion ?? null,
+      targetGameVersion,
+      message:
+        `机器人协议 ${bot}（MCBE ${botVersionText(bot)}）高于本项目基线 ${expected}（${targetGameVersion}）：` +
+        `通常可直接使用；若出现 bad_packet 踢线，把基线提到 ${bot}（FB_NETEASE_PROTOCOL=${bot}）`,
+    };
+  }
   if (bot >= NETEASE_PROTOCOL.minSupportedProtocol) {
     return {
       level: "warn",
       expected,
       bot,
-      botGameVersion: botGameVersion ?? gameVersionFor(bot),
+      botGameVersion: botGameVersion ?? null,
       targetGameVersion,
       message:
-        `机器人协议 ${bot}（MCBE ${botGameVersion || gameVersionFor(bot)}）低于目标 ${expected}（${targetGameVersion}），` +
+        `机器人协议 ${bot}（MCBE ${botVersionText(bot)}）低于目标 ${expected}（${targetGameVersion}），` +
         `可能缺少新字段导致被踢；建议把机器人升级到 NTvector 最新版`,
     };
   }

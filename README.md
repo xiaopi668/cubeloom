@@ -183,7 +183,7 @@ FB_NO_OPEN=1 npm run admin     # 面板 + WS 一起起；只要 WS 就换成 npm
 
 | 项 | 要求 |
 |---|---|
-| 机器人本体 | **需要自备**，本仓库不含（参考 [lurete-cn/NTvector](https://github.com/lurete-cn/NTvector)） |
+| 机器人本体 | **仓库自带** NTvector 官方 Windows 包（[vendor/ntvector](vendor/ntvector/)，MIT）+ Cubeloom 桥插件，`npm run setup:netease-bot` 一键解压；仍需自己的账号 `mc.cfg` 与 OP 权限 |
 | 机器人账号 | 必须是目标服的 **OP**，或服务器开启了作弊，否则指令无效 |
 | 运行平台 | Linux / macOS（事件桥走 UNIX socket；Windows 请用 WSL） |
 | 协议基线 | MCBE 1.21.130 / 协议 898，可用 `FB_NETEASE_PROTOCOL` 覆盖，详见 [docs/NETEASE_PROTOCOL.md](docs/NETEASE_PROTOCOL.md) |
@@ -200,6 +200,20 @@ chmod 600 netease/netease.env
 
 机器人侧按 `netease/config.json.example`（房间号/密码）和 `netease/mc.cfg.example`（`sauth` 登录凭证）填写，
 这两份是**账号凭据**，权限设 600，别提交到仓库（`.gitignore` 已忽略 `netease/*.env`、`netease/config.json`、`netease/mc.cfg`）。
+
+### 机器人（仓库自带，一键解压）
+
+```bash
+npm run setup:netease-bot     # 解压 vendor/ntvector 到 netease-bot/，装桥插件、生成 token
+export FB_NETEASE_BOT_CMD="$PWD/netease-bot/start-bot.bat"
+export FB_NETEASE_SOCKET="tcp://127.0.0.1:17999"
+export FB_NETEASE_TOKEN="$(node -p "require('./netease-bot/ntvector/scripts/cubeloom_bridge/cubeloom_bridge.json').token")"
+npm run netease               # 自动拉起机器人、等桥就绪、崩了 5 秒后重启
+```
+
+`netease-service` 会在退出时把机器人一起收掉；`/status` 的 `managedBot` 字段能看到
+pid / 重启次数 / 最后错误。细节与"为什么绕不开账号和 OP"见
+[packaging/netease-bot/README.md](packaging/netease-bot/README.md)。
 
 ### 启动
 
@@ -231,19 +245,45 @@ npm run netease
 - 和 WS 版一样只还原方块 ID，不还原方块状态（朝向/半砖/告示牌文字）
 - 网易版服务和 WS 版互不影响，可以同时跑（11454 / 11451 两个端口）
 
+## 打包与分发
+
+### 桌面端（Electron，已可出包）
+
+```bash
+npm run build          # 预编译 server / desktop / mobile 三套产物
+npm run dist:linux     # dist-app/Cubeloom-<版本>.AppImage
+npm run dist:win       # Windows 安装包（在 Windows 或 CI 上跑）
+npm run dist:mac       # macOS dmg（在 macOS 或 CI 上跑）
+```
+
+- 打包后的 App 自带 Node 运行时，用户不需要另装 Node；
+- 面板在应用窗口里打开，游戏仍然 `/connect ws://127.0.0.1:11451`；
+- 日志/口令/临时文件写到系统 userData 目录，安装目录保持只读也能跑；
+- CI 的 `Desktop build` workflow 在 tag `v*` 或手动触发时构建三平台**未签名**产物。
+- 细节与已知限制：[packaging/desktop/README.md](packaging/desktop/README.md)
+
+### 手机端
+
+- **Termux（今天就能用）**：`packaging/mobile/termux-install.sh`，手机同机
+  `/connect ws://127.0.0.1:11451`，面板在浏览器打开；
+- **独立 APK**：需要把 Node 运行时塞进 APK（nodejs-mobile，Node 18），
+  仓库已经产出 `build/mobile/nodejs-project/`（`main.cjs` / `admin-server.cjs` /
+  预构建几何库 / 面板资源），但 JNI 桥与 Gradle 工程尚未构建，因此暂无 `.apk`；
+- 路线、步骤与工作量估计：[packaging/mobile/README.md](packaging/mobile/README.md)
+
 ## 安全说明
 
 聊天栏 `-` 命令会在服务端执行 JavaScript，这是本项目的核心玩法，也因此必须说清边界：
 
-- 沙箱基于 `node:vm` 独立上下文：脚本里直接 `process` / `require` / `Buffer` 不可达，字符串构造（`Function` / `eval`）被禁用，单条命令默认 5 秒超时（`FB_SANDBOX_TIMEOUT`）
-- **这不是安全边界，已实测可逃逸**：注入的 `plot` / `setBlocks` 是宿主对象，
-  `plot.constructor('return process')().getBuiltinModule('child_process').execSync('id')` 就能在宿主上执行命令。
-  因此「能发 `-` 命令 / 能调控制接口」等同于「能在跑服务的这台机器上执行任意代码」。
-  彻底隔离需要把执行搬进 `worker_threads` 或子进程，只回传方块数据——目前尚未实现
+- 沙箱基于 `node:vm` 独立上下文：脚本里 `process` / `require` / `Buffer` 不可达，字符串构造（`Function` / `eval`）被禁用，单条命令默认 5 秒超时（`FB_SANDBOX_TIMEOUT`）
+- **已知逃逸链已封堵**：几何库（VoxelGeometry）打包后在上下文**内部**求值，`plot` / `setBlocks` / `session` 等宿主 API 通过隐藏桥接暴露——脚本拿到的是上下文函数，宿主对象/函数不会外泄。
+  以前的 `plot.constructor('return process')().getBuiltinModule('child_process')...` 和 `sphere(1).constructor.constructor('return process')()` 现在都拿不到宿主（`test/sandbox.test.ts` 17 条用例锁死）
+- **它仍然不是"无能力"沙箱**：`node:vm` 本身不是安全边界；并且 `setBlocks` / `session.sendCommand` 按设计就能改世界、发任意原版命令。要跑完全不可信的脚本，请把整个服务放进容器/虚拟机
 - 认证默认值：本机（`127.0.0.1` / `::1`）连接免验证；**局域网或公网设备连进来必须先发 `--login <令牌>`**，令牌在启动日志里打印，可用 `FB_LOCAL_TOKEN` 固定
+- 反向代理/隧道（cloudflared、nginx、frp）转发进来的连接即使远端显示为 `127.0.0.1`，只要带 `X-Forwarded-For` / `X-Real-IP` / `CF-Connecting-IP` 就按外部连接处理，必须 `--login`
 - 要让所有来源都免验证（不推荐）：`FB_ALLOW_ANON=1`
 
-自测：`npm run check:sandbox`（39 项断言，覆盖隔离、API 未回退、鉴权优先级、落块层与回显层）。
+自测：`npm run check:sandbox`（39 项断言）+ `npm test`（74 条：沙箱逃逸/修补器/坐标契约/格式解析/鉴权/发送队列/网易桥/托管机器人）。
 
 > 维护与风险清单：见 [docs/维护手册.md](docs/维护手册.md)。
 

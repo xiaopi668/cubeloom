@@ -40,8 +40,10 @@ function isLoopback(address?: string): boolean {
  *   3. `FB_REQUIRE_AUTH=1` → 本机也强制验证
  *   4. 默认 → 本机回环免验证，外部（手机 / 别的电脑）必须 `--login` 本机令牌
  */
-function resolveRequireAuth(remoteAddress?: string): boolean {
+function resolveRequireAuth(remoteAddress?: string, forceAuth = false): boolean {
   if (process.env.FB_ALLOW_ANON === "1") return false;
+  // 反向代理/隧道转发进来的连接：远端看似回环，但实际来源不可信（P1-14）
+  if (forceAuth) return true;
   if (process.env.FB_USERS_FILE) return true;
   if (process.env.FB_REQUIRE_AUTH === "1") return true;
   return !isLoopback(remoteAddress);
@@ -69,15 +71,18 @@ export default class Session {
   gameProps: any = null;
   gamePropsAt = 0;
   private capturedOnce = false;
+  /** 加密握手是否完成（未完成的连接不参与 activeSession，见 main.ts P1-6） */
+  ready = false;
   /** 游戏内登录认证：外部连接必须 --login 令牌 验证 */
   authUser: { id: string; username: string } | null = null;
   authAttempts = 0;
   readonly requireAuth: boolean;
   readonly ownerUid = process.env.FB_OWNER_UID || "";
   private authTimer: NodeJS.Timeout | null = null;
-  constructor(session: ServerSession, remoteAddress?: string) {
+  constructor(session: ServerSession, remoteAddress?: string, opts: { forceAuth?: boolean } = {}) {
     this.session = session;
-    this.requireAuth = resolveRequireAuth(remoteAddress);
+    // forceAuth：反向代理/隧道转发进来的连接（远端看似回环），按外部处理（P1-14）
+    this.requireAuth = resolveRequireAuth(remoteAddress, !!opts.forceAuth);
     this.setting = {
       block: "minecraft:iron_block",
       origin: Vec3(0, 0, 0),
@@ -86,6 +91,7 @@ export default class Session {
     // 新版基岩版要求会话加密完成后才受理任何命令（否则返回「需要加密的会话」），
     // 所以欢迎语、事件订阅、函数加载都必须等加密握手回调后再做。
     const ready = () => {
+      this.ready = true;
       this.welcome();
       this.bind_user();
       this.bind_game_info();
@@ -97,8 +103,8 @@ export default class Session {
     if (!handshaking) ready();
   }
 
-  static create(session: ServerSession, remoteAddress?: string) {
-    return new Session(session, remoteAddress);
+  static create(session: ServerSession, remoteAddress?: string, opts: { forceAuth?: boolean } = {}) {
+    return new Session(session, remoteAddress, opts);
   }
 
   /** 需要验证时给玩家的提示语 */

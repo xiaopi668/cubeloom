@@ -30,3 +30,9 @@ Copyright (C) 2026 Cubeloom contributors
 4. ws
    来源：https://github.com/websockets/ws
    许可：MIT License
+
+5. NTvector / OPEN_NTVECTOR
+   来源：https://github.com/lurete-cn/NTvector
+   许可：MIT License（见 vendor/ntvector/LICENSE）
+   说明：网易版机器人本体，随仓库以官方 release 原包分发（vendor/ntvector/），
+         仅在运行时通过事件桥与 Cubeloom 交互，未修改其代码。

@@ -12,6 +12,7 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 import * as os from "node:os";
 import * as readline from "node:readline";
+import { pathToFileURL } from "node:url";
 
 const APP_NAME = "Cubeloom";
 const IS_WIN = process.platform === "win32";
@@ -41,6 +42,9 @@ const SYS = {
 
 /** ===== 路径与端口 ===== */
 const ROOT = (() => {
+  // 打包运行时（Electron / 便携版）把可写根目录指到 userData；静态资源仍在 app 目录
+  const forced = (process.env.FB_APP_ROOT || "").trim();
+  if (forced) return path.resolve(forced);
   const cwd = process.cwd();
   if (fs.existsSync(path.join(cwd, "main.ts"))) return cwd;
   return path.dirname(path.resolve(process.argv[1] ?? "."));
@@ -60,20 +64,30 @@ const PUBLIC_WS_URL = (process.env.FB_PUBLIC_WS_URL || "").trim().replace(/\/$/,
 const WEB_STARTED_AT = Date.now();
 
 /** ===== 登录口令（只保存哈希，不保存明文） =====
- *  admin/auth.json 存在则启用密码登录；不存在则无需登录（本机开发模式）
- *  格式：{ "passwordHash": "scrypt$N$r$p$saltB64$keyB64", "secret": "...", "sessionHours": 12 }
+ *  admin/auth.json 存在则启用密码登录。
+ *  格式：{ "passwordHash": "scrypt$N$r$p$saltB64$keyB64", "secret": "...", "sessionHours": 12, "epoch": 0 }
+ *
+ *  启动策略（P1-10，fail-closed）：
+ *   · 文件存在且可解析        → 启用口令登录；
+ *   · 文件不存在 + 绑回环     → 本机开发模式（无口令，打日志说明）；
+ *   · 文件不存在 + 绑非回环   → 拒绝启动（除非 FB_ADMIN_ALLOW_NO_AUTH=1 显式自担风险）；
+ *   · 文件存在但解析失败/缺字段 → 拒绝启动（不允许静默退化成无鉴权）。
+ *
+ *  会话签名（P1-11）：HMAC(secret, "<exp>.<epoch>")，epoch 来自 auth.json。
+ *  改口令时 set-password 会轮换 secret 并把 epoch 加一，旧 Cookie 立即失效。
  */
-const AUTH_FILE = path.join(ADMIN_DIR, "auth.json");
-type AuthConfig = { passwordHash: string; secret: string; sessionHours?: number };
-let auth: AuthConfig | null = null;
-try {
-  auth = JSON.parse(fs.readFileSync(AUTH_FILE, "utf8"));
-  if (!auth?.passwordHash || !auth?.secret) auth = null;
-} catch {
-  auth = null;
-}
+const AUTH_FILE = (() => {
+  const override = String(process.env.FB_ADMIN_AUTH_FILE || "").trim();
+  return override ? path.resolve(override) : path.join(ADMIN_DIR, "auth.json");
+})();
 
-function hashPassword(password: string): string {
+export type AuthConfig = { passwordHash: string; secret: string; sessionHours?: number; epoch?: number };
+let auth: AuthConfig | null = null;
+
+/** 是否允许"非回环 + 无口令"启动（显式自担风险） */
+const ALLOW_NO_AUTH = String(process.env.FB_ADMIN_ALLOW_NO_AUTH || "").trim() === "1";
+
+export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16);
   const key = crypto.scryptSync(password, salt, 64);
   return `scrypt$16384$8$1$${salt.toString("base64")}$${key.toString("base64")}`;
@@ -97,24 +111,242 @@ function verifyPassword(password: string, stored: string): boolean {
   }
 }
 
+/** epoch 归一化：缺省/非法一律当 0（兼容没有 epoch 字段的旧 auth.json） */
+export function normalizeEpoch(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
+export function authEpoch(config: AuthConfig | null): number {
+  return normalizeEpoch(config?.epoch);
+}
+
+/** 绑定地址是否回环（127.0.0.0/8、::1、localhost） */
+export function isLoopbackBindHost(host: string | undefined): boolean {
+  const raw = String(host ?? "").trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+  if (!raw) return false;
+  if (raw === "localhost" || raw === "::1" || raw === "0:0:0:0:0:0:0:1" || raw === "::ffff:127.0.0.1") return true;
+  return /^127\./.test(raw);
+}
+
+/** 校验并归一化 auth.json 的内容；不合法返回 null */
+export function normalizeAuthConfig(parsed: any): AuthConfig | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const passwordHash = typeof parsed.passwordHash === "string" ? parsed.passwordHash.trim() : "";
+  const secret = typeof parsed.secret === "string" ? parsed.secret.trim() : "";
+  if (!passwordHash || !secret) return null;
+  if (!/^scrypt\$/.test(passwordHash)) return null;
+  const hours = Number(parsed.sessionHours);
+  return {
+    passwordHash,
+    secret,
+    sessionHours: Number.isFinite(hours) && hours > 0 ? hours : 12,
+    epoch: normalizeEpoch(parsed.epoch),
+  };
+}
+
+export type AuthStartup =
+  | { mode: "password"; config: AuthConfig }
+  | { mode: "open"; reason: "loopback" | "forced"; message: string }
+  | { mode: "fatal"; message: string };
+
+/**
+ * 启动时的认证判定（纯逻辑 + 一次读文件），失败时把"为什么"和"怎么修"写清楚。
+ * 由 startServer() 调用；测试用临时文件直接调。
+ */
+export function loadAuthStartup(authFile: string, bindHost: string, allowNoAuth: boolean): AuthStartup {
+  const rel = path.basename(authFile);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(authFile, "utf8");
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") {
+      return {
+        mode: "fatal",
+        message: [
+          `读取口令文件失败：${authFile}（${e?.message ?? e}）`,
+          ` 解决方式：检查文件权限，或删除它后运行 npm run set-password 重建。`,
+        ].join("\n"),
+      };
+    }
+    // 文件不存在
+    if (isLoopbackBindHost(bindHost)) {
+      return {
+        mode: "open",
+        reason: "loopback",
+        message: `未设置管理页口令（${rel} 不存在）：面板只绑定回环 ${bindHost}，按本机开发模式运行（外部无法访问）`,
+      };
+    }
+    if (allowNoAuth) {
+      return {
+        mode: "open",
+        reason: "forced",
+        message:
+          `[警告] FB_ADMIN_ALLOW_NO_AUTH=1：面板绑定在非回环地址 ${bindHost} 且没有口令，` +
+          `局域网/公网内任何人都能执行沙箱代码（等效于远程命令执行）`,
+      };
+    }
+    return {
+      mode: "fatal",
+      message: [
+        `面板绑定在非回环地址 ${bindHost}，但 ${authFile} 不存在 → 拒绝启动（不静默降级成无鉴权面板）。`,
+        ` 解决方式一（推荐）：npm run set-password        # 设置管理页口令，然后重新启动面板`,
+        ` 解决方式二：FB_ADMIN_ALLOW_NO_AUTH=1 npm run admin   # 显式接受"任何人可执行沙箱代码"的风险`,
+        ` 只想本机开发：FB_ADMIN_HOST=127.0.0.1 npm run admin  # 退回回环绑定，无需口令`,
+      ].join("\n"),
+    };
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
+  } catch (e: any) {
+    return {
+      mode: "fatal",
+      message: [
+        `${authFile} 解析失败（${e?.message ?? e}）→ 拒绝启动：损坏的口令文件会让面板退化成无鉴权。`,
+        ` 解决方式：备份后删除该文件，再运行 npm run set-password 重建（会写入新的口令哈希 + secret + epoch）。`,
+      ].join("\n"),
+    };
+  }
+  const config = normalizeAuthConfig(parsed);
+  if (!config) {
+    return {
+      mode: "fatal",
+      message: [
+        `${authFile} 内容不完整（缺少 passwordHash / secret，或哈希格式不是 scrypt）→ 拒绝启动。`,
+        ` 解决方式：运行 npm run set-password 重新生成（会覆盖写入完整配置）。`,
+      ].join("\n"),
+    };
+  }
+  return { mode: "password", config };
+}
+
 const SESSION_SECONDS = () => Math.max(1, Number(auth?.sessionHours ?? 12)) * 3600;
 
+/** 会话 token：`<exp>.<epoch>.<hmac>`，epoch 混进 HMAC（缺 epoch 的旧配置按 0 处理） */
+export function signSessionToken(config: AuthConfig, exp: number, epoch = authEpoch(config)): string {
+  const mac = crypto.createHmac("sha256", config.secret).update(`${exp}.${epoch}`).digest("base64url");
+  return `${exp}.${epoch}.${mac}`;
+}
+
+export type SessionCheck =
+  | { ok: true; exp: number; epoch: number }
+  | { ok: false; reason: "no-auth" | "malformed" | "epoch" | "bad-mac" | "expired" };
+
+export function verifySessionToken(config: AuthConfig | null, raw: string | undefined, now = Date.now()): SessionCheck {
+  if (!config || !raw) return { ok: false, reason: "no-auth" };
+  const parts = raw.split(".");
+  // 旧格式（两段，无 epoch）一律拒绝：口径与"轮换 secret 即失效"一致
+  if (parts.length !== 3) return { ok: false, reason: "malformed" };
+  const exp = Number(parts[0]);
+  const epoch = Number(parts[1]);
+  const mac = parts[2];
+  if (!Number.isFinite(exp) || !Number.isFinite(epoch) || !mac) return { ok: false, reason: "malformed" };
+  const current = authEpoch(config);
+  if (Math.floor(epoch) !== current) return { ok: false, reason: "epoch" };
+  const expected = crypto.createHmac("sha256", config.secret).update(`${exp}.${current}`).digest("base64url");
+  if (mac.length !== expected.length) return { ok: false, reason: "bad-mac" };
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(expected))) return { ok: false, reason: "bad-mac" };
+  } catch {
+    return { ok: false, reason: "bad-mac" };
+  }
+  if (exp * 1000 < now) return { ok: false, reason: "expired" };
+  return { ok: true, exp, epoch: current };
+}
+
+/** 当前进程使用的会话签名（路由里用） */
 function signSession(exp: number): string {
-  const mac = crypto.createHmac("sha256", auth!.secret).update(String(exp)).digest("base64url");
-  return `${exp}.${mac}`;
+  return signSessionToken(auth!, exp);
 }
 
 function isValidSession(raw: string | undefined): boolean {
-  if (!auth || !raw) return false;
-  const [expStr, mac] = raw.split(".");
-  const exp = Number(expStr);
-  if (!Number.isFinite(exp) || exp * 1000 < Date.now() || !mac) return false;
-  const expected = crypto.createHmac("sha256", auth.secret).update(String(exp)).digest("base64url");
+  return verifySessionToken(auth, raw).ok;
+}
+
+/** 请求是否来自 https（含反代）→ Cookie 需要 Secure；FB_ADMIN_COOKIE_SECURE=1 强制开启 */
+export function isSecureCookieRequest(
+  req: { headers: NodeJS.Dict<string | string[]>; socket?: unknown },
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  if (String(env.FB_ADMIN_COOKIE_SECURE || "").trim() === "1") return true;
+  const proto = req.headers["x-forwarded-proto"];
+  const first = String(Array.isArray(proto) ? proto[0] : proto ?? "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  if (first === "https") return true;
+  const sock = req.socket as { encrypted?: boolean } | undefined;
+  return sock?.encrypted === true;
+}
+
+function sessionCookie(value: string, maxAge: number, secure: boolean): string {
+  return `cq_session=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+}
+
+/** 轮换后的配置：新 secret + epoch 加一，口令哈希不变 */
+export function rotateAuthConfig(config: AuthConfig): AuthConfig {
+  return { ...config, secret: crypto.randomBytes(32).toString("base64url"), epoch: authEpoch(config) + 1 };
+}
+
+/**
+ * 原子写 auth.json：同目录临时文件（wx + 0600）→ fsync → rename → 目录 fsync。
+ * 失败时删除临时文件并抛出；rename 之前不会破坏原文件。
+ */
+export function writeAuthFileAtomic(file: string, config: AuthConfig): string {
+  const target = path.resolve(file);
+  const dir = path.dirname(target);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(target)}.${process.pid}.${Date.now().toString(36)}.tmp`);
+  const payload = Buffer.from(JSON.stringify(config, null, 2) + "\n", "utf8");
+  let fd: number | undefined;
   try {
-    return mac.length === expected.length && crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(expected));
-  } catch {
-    return false;
+    fd = fs.openSync(tmp, "wx", 0o600);
+    let off = 0;
+    while (off < payload.length) off += fs.writeSync(fd, payload, off, payload.length - off, off);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    try {
+      fs.chmodSync(tmp, 0o600);
+    } catch {}
+    fs.renameSync(tmp, target);
+    try {
+      fs.chmodSync(target, 0o600);
+    } catch {}
+    try {
+      const dfd = fs.openSync(dir, "r");
+      try {
+        fs.fsyncSync(dfd);
+      } finally {
+        fs.closeSync(dfd);
+      }
+    } catch {}
+    return target;
+  } catch (e: any) {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+    try {
+      fs.unlinkSync(tmp);
+    } catch {}
+    throw new Error(`写入 ${target} 失败：${e?.message ?? e}`);
   }
+}
+
+/** 轮换磁盘上的 secret：优先以文件现状为基准（避免把刚被 set-password 改过的口令写回旧哈希） */
+export function rotateAuthFile(file: string, fallback: AuthConfig): AuthConfig {
+  let base = fallback;
+  try {
+    const parsed = normalizeAuthConfig(JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")));
+    if (parsed) base = parsed;
+  } catch {}
+  const next = rotateAuthConfig(base);
+  writeAuthFileAtomic(file, next);
+  return next;
 }
 
 function readCookie(req: IncomingMessage, name: string): string | undefined {
@@ -254,7 +486,7 @@ function tailNew(file: string, offsets: Map<string, FileOffset>): string[] {
 }
 
 /** 每 300ms 把日志文件的新增行推给所有 SSE 客户端 */
-setInterval(() => {
+const sseTicker = setInterval(() => {
   if (!sseClients.size) return;
   const files = listLogFiles().map((f) => f.name);
   for (const client of [...sseClients]) {
@@ -271,6 +503,8 @@ setInterval(() => {
     }
   }
 }, 300);
+// 被测试 import 时不要让定时器拖住事件循环
+sseTicker.unref?.();
 
 /** ===== WS 子进程管理 ===== */
 let wsChild: ChildProcess | null = null;
@@ -285,15 +519,32 @@ function pipeChild(d: Buffer, isErr: boolean) {
 
 function spawnWs(): boolean {
   if (wsChild) return false;
-  const tsxCli = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
-  if (!fs.existsSync(tsxCli)) {
-    log(`[ERROR] 找不到 tsx：${tsxCli}，请先运行 npm install`);
-    return false;
+  // 打包运行时（Electron/便携版）没有 tsx，也没有 main.ts：直接跑预编译的 server/main.cjs
+  const packagedEntry = (process.env.FB_WS_ENTRY || "").trim();
+  let cmd: string;
+  let args: string[];
+  if (packagedEntry) {
+    const entry = path.resolve(packagedEntry);
+    if (!fs.existsSync(entry)) {
+      log(`[ERROR] 找不到打包后的 WS 入口：${entry}`);
+      return false;
+    }
+    cmd = process.execPath;
+    args = [entry];
+  } else {
+    const tsxCli = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
+    if (!fs.existsSync(tsxCli)) {
+      log(`[ERROR] 找不到 tsx：${tsxCli}，请先运行 npm install`);
+      return false;
+    }
+    cmd = process.execPath;
+    args = [tsxCli, "main.ts"];
   }
-  const child = spawn(process.execPath, [tsxCli, "main.ts"], {
+  const child = spawn(cmd, args, {
     cwd: ROOT,
     env: {
       ...process.env,
+      ELECTRON_RUN_AS_NODE: "1", // 用 Electron 自带 Node 跑子进程时必需；普通 node 会忽略
       FB_WS_PORT: String(WS_PORT),
       FB_CONTROL_PORT: String(CONTROL_PORT),
       FB_WS_VERSION: String(WS_VERSION),
@@ -346,16 +597,20 @@ function killWsOnExit() {
     } catch {}
   }
 }
-process.on("exit", killWsOnExit);
-process.on("SIGINT", () => {
-  log("收到退出信号，正在关闭");
-  killWsOnExit();
-  process.exit(0);
-});
-process.on("SIGTERM", () => {
-  killWsOnExit();
-  process.exit(0);
-});
+
+/** 只在真正跑服务时挂进程钩子（被测试 import 时保持无副作用） */
+function installProcessHooks() {
+  process.on("exit", killWsOnExit);
+  process.on("SIGINT", () => {
+    log("收到退出信号，正在关闭");
+    killWsOnExit();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    killWsOnExit();
+    process.exit(0);
+  });
+}
 
 /** ===== 与控制接口通信 ===== */
 async function refreshPublicIp() {
@@ -557,15 +812,15 @@ const server = createServer(async (req, res) => {
         const exp = Math.floor(Date.now() / 1000) + SESSION_SECONDS();
         res.setHeader(
           "set-cookie",
-          `cq_session=${signSession(exp)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_SECONDS()}`
+          sessionCookie(signSession(exp), SESSION_SECONDS(), isSecureCookieRequest(req))
         );
-        log(`管理页登录成功：${ip}`);
+        log(`管理页登录成功：${ip}${isSecureCookieRequest(req) ? "（Secure Cookie）" : ""}`);
         return sendJson(res, 200, { ok: true });
       }
 
       if (!isPublic) {
         if (req.method === "POST" && p === "/api/logout") {
-          res.setHeader("set-cookie", "cq_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+          res.setHeader("set-cookie", sessionCookie("", 0, isSecureCookieRequest(req)));
           log(`管理页退出登录：${clientIp(req)}`);
           return sendJson(res, 200, { ok: true });
         }
@@ -584,6 +839,23 @@ const server = createServer(async (req, res) => {
           }
           res.writeHead(302, { location: "/" });
           return res.end();
+        }
+
+        // ---- 吊销所有会话（需已登录）：轮换 secret + epoch，当前 Cookie 立刻失效 ----
+        if (req.method === "POST" && p === "/api/auth/revoke") {
+          try {
+            auth = rotateAuthFile(AUTH_FILE, auth);
+            res.setHeader("set-cookie", sessionCookie("", 0, isSecureCookieRequest(req)));
+            log(`[WARN] 管理页会话已全部吊销（epoch=${authEpoch(auth)}，操作者 ${clientIp(req)}）`);
+            return sendJson(res, 200, {
+              ok: true,
+              epoch: authEpoch(auth),
+              note: "所有会话（含当前）已失效，请用新口令重新登录",
+            });
+          } catch (e: any) {
+            log(`[ERROR] 轮换 secret 失败：${e?.message ?? e}`);
+            return sendJson(res, 500, { ok: false, error: `轮换 secret 失败：${e?.message ?? e}` });
+          }
         }
       }
     }
@@ -1025,6 +1297,8 @@ const REPL_HELP = [
 ].join("\n");
 
 function setupRepl() {
+  // 打包运行时（Electron / 无终端）不需要 REPL
+  if (process.env.FB_NO_REPL === "1") return;
   // MCSManager 等网关以管道方式提供 stdin，这里不限制 isTTY；读不到 stdin 时静默跳过
   let rl: readline.Interface;
   try {
@@ -1115,42 +1389,81 @@ function setupRepl() {
   });
 }
 
-server.listen(ADMIN_PORT, ADMIN_HOST, async () => {
-  log(`===== ${APP_NAME} 管理端启动 =====`);
-  log(`网页管理页：http://${ADMIN_HOST === "0.0.0.0" ? "0.0.0.0" : ADMIN_HOST}:${ADMIN_PORT}` +
-    (auth ? "（已启用密码登录）" : "（未设置密码，本机开发模式）"));
-  const loopbackOnly = ADMIN_HOST === "127.0.0.1" || ADMIN_HOST === "::1" || ADMIN_HOST === "localhost";
-  if (!loopbackOnly && !auth) {
-    log("[警告] 面板已绑定非回环地址且没有口令：局域网内任何人都能执行沙箱代码，请先运行 npm run set-password");
-  }
-  refreshPublicIp().then(() => {
-    if (SYS.publicIp) log(`公网 IP：${SYS.publicIp}（本机地址：${SYS.localIps.join("，") || "—"}）`);
-  });
-  setInterval(refreshPublicIp, 10 * 60 * 1000);
-  log(`WS 服务端口 ${WS_PORT}｜控制接口 ${CONTROL_PORT}｜协议版本 ${WS_VERSION}`);
-  log(`日志目录：${LOG_DIR}`);
-  const existing = await wsStatus();
-  if (existing) {
-    log("检测到已有 WS 服务在运行（外部启动），管理端仅做监控");
-  } else {
-    spawnWs();
-  }
-  log("游戏内输入：" + (PUBLIC_WS_URL ? `/connect ${PUBLIC_WS_URL}` : `/connect ws://127.0.0.1:${WS_PORT}`));
-  if (process.env.FB_NO_OPEN !== "1") {
-    setTimeout(() => {
+/**
+ * 启动面板。
+ * 认证判定放在 listen 之前：口径不对就打印原因并退非 0，绝不"带病开放"。
+ */
+function startServer() {
+  const startup = loadAuthStartup(AUTH_FILE, ADMIN_HOST, ALLOW_NO_AUTH);
+  if (startup.mode === "fatal") {
+    for (const line of [`[${APP_NAME}] 启动中止：管理端认证配置不可用`, startup.message, ""]) {
+      console.error(line);
       try {
-        spawn("cmd", ["/c", "start", "", `http://127.0.0.1:${ADMIN_PORT}`], {
-          windowsHide: true,
-          detached: true,
-          stdio: "ignore",
-        }).unref();
+        fs.appendFileSync(ADMIN_LOG, `[${isoUtc8()}] [admin] [FATAL] ${line}\n`);
       } catch {}
-    }, 800);
+    }
+    process.exit(1);
   }
-});
+  auth = startup.mode === "password" ? startup.config : null;
+  if (startup.mode === "open") log(startup.message);
+  installProcessHooks();
 
-process.on("uncaughtException", (e) => {
-  log(`[ERROR] 未捕获异常：${e?.message ?? e}`);
-});
+  server.listen(ADMIN_PORT, ADMIN_HOST, async () => {
+    log(`===== ${APP_NAME} 管理端启动 =====`);
+    log(
+      `网页管理页：http://${ADMIN_HOST === "0.0.0.0" ? "0.0.0.0" : ADMIN_HOST}:${ADMIN_PORT}` +
+        (auth
+          ? `（已启用密码登录 · epoch=${authEpoch(auth)} · Cookie 在 https/反代下自动加 Secure）`
+          : "（未设置密码，本机开发模式）")
+    );
+    if (!auth && isLoopbackBindHost(ADMIN_HOST)) {
+      log(`[提示] ${AUTH_FILE} 不存在 → 无口令模式；这是本机开发模式，面板只绑定回环地址 ${ADMIN_HOST}`);
+    }
+    refreshPublicIp().then(() => {
+      if (SYS.publicIp) log(`公网 IP：${SYS.publicIp}（本机地址：${SYS.localIps.join("，") || "—"}）`);
+    });
+    setInterval(refreshPublicIp, 10 * 60 * 1000).unref?.();
+    log(`WS 服务端口 ${WS_PORT}｜控制接口 ${CONTROL_PORT}｜协议版本 ${WS_VERSION}`);
+    log(`日志目录：${LOG_DIR}`);
+    const existing = await wsStatus();
+    if (existing) {
+      log("检测到已有 WS 服务在运行（外部启动），管理端仅做监控");
+    } else {
+      spawnWs();
+    }
+    log("游戏内输入：" + (PUBLIC_WS_URL ? `/connect ${PUBLIC_WS_URL}` : `/connect ws://127.0.0.1:${WS_PORT}`));
+    if (process.env.FB_NO_OPEN !== "1") {
+      setTimeout(() => {
+        try {
+          spawn("cmd", ["/c", "start", "", `http://127.0.0.1:${ADMIN_PORT}`], {
+            windowsHide: true,
+            detached: true,
+            stdio: "ignore",
+          }).unref();
+        } catch {}
+      }, 800);
+    }
+  });
+  setupRepl();
+}
 
-setupRepl();
+/** 只在"直接运行"（tsx admin-server.ts）时启动；被测试 import 时只导出纯函数 */
+const IS_ENTRY = (() => {
+  // 预编译成 CJS 后 import.meta.url 不存在，用显式开关判定入口
+  if (process.env.FB_FORCE_ENTRY === "1") return true;
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    const self = typeof import.meta !== "undefined" ? import.meta.url : "";
+    return !!self && self === pathToFileURL(path.resolve(entry)).href;
+  } catch {
+    return false;
+  }
+})();
+
+if (IS_ENTRY) {
+  process.on("uncaughtException", (e) => {
+    log(`[ERROR] 未捕获异常：${e?.message ?? e}`);
+  });
+  startServer();
+}

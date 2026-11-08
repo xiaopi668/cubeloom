@@ -25,7 +25,11 @@ const C = {
 const DEFAULT_CFG = {
   wsPort: Number(process.env.FB_WS_PORT || 11451),
   adminPort: Number(process.env.FB_ADMIN_PORT || 11452),
+  adminHost: process.env.FB_ADMIN_HOST || "127.0.0.1",
   controlPort: Number(process.env.FB_CONTROL_PORT || 11453),
+  // 与面板（admin-server.ts）对齐：协议版本与对外公布的 WS 地址
+  wsVersion: Number(process.env.FB_WS_VERSION || 17104896),
+  publicWsUrl: (process.env.FB_PUBLIC_WS_URL || "").trim().replace(/\/$/, ""),
   offsetY: 0,
   lastFile: "",
 };
@@ -35,6 +39,13 @@ try { cfg = { ...DEFAULT_CFG, ...JSON.parse(fs.readFileSync(CFG_FILE, "utf8")) }
 const saveCfg = () => { try { fs.writeFileSync(CFG_FILE, JSON.stringify(cfg, null, 2)); } catch {} };
 
 const base = () => `http://127.0.0.1:${cfg.controlPort}`;
+/** 面板地址：绑 0.0.0.0/:: 时按回环访问（面板的 requestGuard 只接受本机 Host） */
+const adminBase = () => {
+  const host = !cfg.adminHost || cfg.adminHost === "0.0.0.0" || cfg.adminHost === "::" ? "127.0.0.1" : cfg.adminHost;
+  return `http://${host}:${cfg.adminPort}`;
+};
+/** 游戏内 /connect 用的地址（与面板 FB_PUBLIC_WS_URL 口径一致） */
+const connectAddr = () => cfg.publicWsUrl || `ws://127.0.0.1:${cfg.wsPort}`;
 let child = null;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -53,11 +64,31 @@ async function api(pathname, body) {
   }
 }
 
+/** 调面板接口；返回 { status, data, error }，任何异常都不抛 */
+async function adminApi(pathname, body, timeout = 4000) {
+  try {
+    const r = await fetch(adminBase() + pathname, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeout),
+    });
+    const data = await r.json().catch(() => null);
+    return { status: r.status, data };
+  } catch (e) {
+    return { status: 0, data: null, error: e && e.message ? e.message : String(e) };
+  }
+}
+
 function title() {
   const line = "═".repeat(56);
   console.log(`\n${C.blue}${line}${C.reset}`);
   console.log(`${C.bold}${C.cyan}   Cubeloom CLI${C.reset} ${C.gray}v1.0 · 基岩版结构导入${C.reset}`);
   console.log(`${C.blue}${line}${C.reset}`);
+  console.log(
+    `${C.gray}   WS ${cfg.wsPort} · 控制口 ${cfg.controlPort} · 面板 ${cfg.adminPort} · 协议 ${cfg.wsVersion}${C.reset}`
+  );
+  console.log(`${C.gray}   游戏内：/connect ${connectAddr()}${C.reset}`);
 }
 
 function tip(text) { console.log(`${C.gray}${text}${C.reset}`); }
@@ -82,23 +113,79 @@ async function startService() {
     cwd: ROOT,
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, FB_WS_PORT: String(cfg.wsPort), FB_CONTROL_PORT: String(cfg.controlPort) },
+    // 与面板拉起的实例保持一致：FB_WS_VERSION 决定加密握手门槛
+    env: {
+      ...process.env,
+      FB_WS_PORT: String(cfg.wsPort),
+      FB_CONTROL_PORT: String(cfg.controlPort),
+      FB_WS_VERSION: String(cfg.wsVersion),
+    },
   });
   child.unref();
   for (let i = 0; i < 30; i++) {
     await sleep(500);
-    if (await ping()) { ok(`WS 服务已启动：ws://127.0.0.1:${cfg.wsPort}`); return true; }
+    if (await ping()) {
+      ok(`WS 服务已启动：ws://127.0.0.1:${cfg.wsPort}（协议 ${cfg.wsVersion}）`);
+      tip(`游戏内输入：/connect ${connectAddr()}`);
+      return true;
+    }
   }
   bad("启动超时，请看 logs 目录或手动运行");
   return false;
 }
 
+/**
+ * 停止 WS 服务（P1-15）。
+ *
+ * 旧实现往沙箱丢 `process.exit(0)`：沙箱里根本没有 process，必然失败，却打印"已发送停止指令"。
+ * 现在改走面板 `/api/ws/action`（面板自己 spawn 的子进程才归它管），并且**以复核结果为准**：
+ *   · 面板不可达 / WS 是独立启动的 → 明确说明"面板停不了它"，给出停止方式，不谎报成功；
+ *   · 面板可达但没起过这个 WS → 面板会返回 owned=false，同样如实告知。
+ */
 async function stopService() {
-  if (!(await ping())) { warn("WS 服务未运行"); return; }
-  // 通过 eval 结束进程（沙箱里调用 process.exit）
-  await api("/eval", { code: "process.exit(0)" });
-  await sleep(800);
-  ok("已发送停止指令");
+  const st = await adminApi("/api/status", undefined, 2500);
+  if (!st.data) {
+    if (!(await ping())) return warn("WS 服务未运行（控制接口没有响应）");
+    warn(`面板不可达（${adminBase()}）：${st.error || `HTTP ${st.status}`}`);
+    bad("这个 WS 服务是独立启动的，面板停不了它。");
+    tip("请关闭启动它的终端窗口，或运行 stop.bat。");
+    return;
+  }
+  if (st.status === 401 || st.data.ok === false) {
+    warn("面板已启用口令登录，CLI 没有会话 Cookie，无法代为启停。");
+    tip(`请打开 ${adminBase()} 登录后点「停止 WS」，或运行 stop.bat。`);
+    return;
+  }
+  const ws = st.data.ws || {};
+  if (!ws.owned) {
+    if (!ws.running) return warn(`WS 服务未运行${ws.error ? "（" + ws.error + "）" : ""}`);
+    bad("这个 WS 服务不是面板拉起的（面板只在监控它），面板无法停止。");
+    tip("请关闭它的终端窗口，或运行 stop.bat / 结束对应的 node 进程。");
+    return;
+  }
+
+  tip("请求面板停止 WS 服务…");
+  const r = await adminApi("/api/ws/action", { action: "stop" }, 15000);
+  const d = r.data || {};
+  if (r.status === 401) {
+    warn("面板要求登录，CLI 无法代为停止。");
+    tip(`请打开 ${adminBase()} 登录后点「停止 WS」，或运行 stop.bat。`);
+    return;
+  }
+  if (!d.ok) {
+    bad("停止失败：" + (d.error || `HTTP ${r.status}`));
+    tip("如果这个 WS 是独立启动的，请关闭它的终端窗口，或运行 stop.bat。");
+    return;
+  }
+  // 面板返回成功也要复核：控制接口不再响应 / WS 进程已不在，才算真的停了
+  await sleep(600);
+  const after = await adminApi("/api/status", undefined, 2500);
+  const ws2 = (after.data && after.data.ws) || {};
+  if (ws2.owned || (await ping())) {
+    bad("面板返回成功，但 WS 控制接口仍在响应：请查看面板日志（logs/admin.log）");
+    return;
+  }
+  ok("WS 服务已停止");
 }
 
 /* ---------------- 状态 ---------------- */
@@ -108,6 +195,12 @@ async function showStatus() {
   hr();
   console.log(`${C.bold}运行状态${C.reset}`);
   console.log(`   WS 端口        ${C.cyan}${r.port}${C.reset}`);
+  const liveVersion = r.version ?? cfg.wsVersion;
+  const versionMismatch = Number(liveVersion) !== Number(cfg.wsVersion);
+  console.log(
+    `   协议版本       ${liveVersion}${versionMismatch ? ` ${C.yellow}（与 CLI 配置 ${cfg.wsVersion} 不一致）${C.reset}` : ""}`
+  );
+  console.log(`   游戏内连接     ${C.gray}/connect ${connectAddr()}${C.reset}`);
   console.log(`   连接数         ${r.totalConnections ?? 0}（会话 ${r.sessionCount ?? 0}）`);
   console.log(`   当前玩家       ${r.active ? (r.active.username || "未登录") + " · " + r.active.address : C.gray + "无" + C.reset}`);
   if (r.structure?.pending) {

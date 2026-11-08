@@ -1,0 +1,44 @@
+name: Desktop build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  desktop:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: --linux
+          - os: windows-latest
+            target: --win
+          - os: macos-latest
+            target: --mac
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+      - name: 预编译 server / desktop / mobile bundle
+        run: npm run build
+      - name: 打包（未签名）
+        run: npx --yes electron-builder@26 --project build/desktop ${{ matrix.target }} --publish never
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: cubeloom-${{ matrix.os }}
+          path: |
+            dist-app/*.AppImage
+            dist-app/*.tar.gz
+            dist-app/*.exe
+            dist-app/*.zip
+            dist-app/*.dmg
+          if-no-files-found: ignore

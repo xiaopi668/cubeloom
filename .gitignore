@@ -25,3 +25,6 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# 维护者本地分析档案（含 PoC 细节，不入库）
+docs/analysis/

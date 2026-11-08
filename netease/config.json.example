@@ -1,0 +1,9 @@
+{
+  "_说明": "把这个文件复制为 config.json 并填入你自己的网易账号/房间信息。机器人本体需自行准备（本项目不含）。",
+  "mode": "server",
+  "id": "你的租赁服短号",
+  "password": "房间密码",
+  "cookie_file": "mc.cfg",
+  "key_file": "key.json",
+  "proxy": { "enabled": false }
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=Cubeloom local (WS + admin panel)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cubeloom
+ExecStart=/usr/bin/env node node_modules/tsx/dist/cli.mjs admin-server.ts
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

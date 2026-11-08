@@ -1,0 +1,32 @@
+MIT License
+
+Copyright (c) 2026 CyanQiuper contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+本项目基于 CAIMEOX/FastBuilder（MIT License）扩展而来，特此致谢。
+本项目与 Mojang、Microsoft、网易无关；使用相关服务时请遵守对应服务条款。
+
+---
+
+[说明] 以上中文附注是上游 CyanQiuper-Builder 原文，为保持声明完整而原样保留。
+其中「FastBuilder 为 MIT License」的说法与事实不符：CAIMEOX/FastBuilder 仓库
+没有 LICENSE 文件，默认保留所有权利。授权缺口见 NOTICE。

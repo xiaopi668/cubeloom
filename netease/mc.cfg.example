@@ -1,0 +1,2 @@
+# 把你自己的网易版登录凭证（sauth cookie）粘贴到这一行；文件名保存为 mc.cfg
+sauth=你的_sauth_cookie_内容

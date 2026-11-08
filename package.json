@@ -1,0 +1,41 @@
+{
+  "name": "cubeloom",
+  "version": "0.1.0",
+  "description": "Cubeloom - WebSocket based Minecraft Bedrock structure generator (voxel geometry + structure import + MIDI music box)",
+  "main": "main.ts",
+  "scripts": {
+    "start": "bun run main.ts",
+    "start:node": "tsx main.ts",
+    "ws": "tsx main.ts",
+    "admin": "tsx admin-server.ts",
+    "cli": "node cli.mjs",
+    "set-password": "node tools/set-password.mjs",
+    "check:sandbox": "tsx tools/check-sandbox.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaopi668/cubeloom.git"
+  },
+  "author": "Cubeloom contributors",
+  "license": "AGPL-3.0-or-later",
+  "bugs": {
+    "url": "https://github.com/xiaopi668/cubeloom/issues"
+  },
+  "homepage": "https://github.com/xiaopi668/cubeloom#readme",
+  "dependencies": {
+    "@pureeval/voxel-geometry": "1.2.10",
+    "mcpews": "^4.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6"
+  },
+  "keywords": [
+    "minecraft",
+    "bedrock",
+    "mcpews",
+    "voxel",
+    "structure",
+    "websocket",
+    "agpl"
+  ]
+}

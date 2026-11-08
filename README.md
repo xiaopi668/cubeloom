@@ -186,7 +186,7 @@ FB_NO_OPEN=1 npm run admin     # 面板 + WS 一起起；只要 WS 就换成 npm
 | 机器人本体 | **仓库自带** NTvector 官方 Windows 包（[vendor/ntvector](vendor/ntvector/)，MIT）+ Cubeloom 桥插件，`npm run setup:netease-bot` 一键解压；仍需自己的账号 `mc.cfg` 与 OP 权限 |
 | 机器人账号 | 必须是目标服的 **OP**，或服务器开启了作弊，否则指令无效 |
 | 运行平台 | Linux / macOS（事件桥走 UNIX socket；Windows 请用 WSL） |
-| 协议基线 | MCBE 1.21.130 / 协议 898，可用 `FB_NETEASE_PROTOCOL` 覆盖，详见 [docs/NETEASE_PROTOCOL.md](docs/NETEASE_PROTOCOL.md) |
+| 协议基线 | MCBE 1.21.130 / 协议 898，可用 `FB_NETEASE_PROTOCOL` 覆盖（基线常量见 `src/netease-protocol.ts`） |
 
 ### 配置
 
@@ -245,31 +245,52 @@ npm run netease
 - 和 WS 版一样只还原方块 ID，不还原方块状态（朝向/半砖/告示牌文字）
 - 网易版服务和 WS 版互不影响，可以同时跑（11454 / 11451 两个端口）
 
-## 打包与分发
+## 下载与使用（APK / EXE / AppImage）
 
-### 桌面端（Electron，已可出包）
+推送到 `main` 或打 `v*` tag 时，GitHub Actions 会自动编译三端产物：
+Actions 页面里对应 workflow 的 **Artifacts**（tag 构建还会附带 Release）。
+
+| 平台 | 文件 | 怎么用 |
+|---|---|---|
+| Windows | `Cubeloom Setup <版本>.exe` / `Cubeloom-<版本>-win.zip` | 运行安装包；或解压后双击 `Cubeloom.exe` |
+| Linux | `Cubeloom-<版本>.AppImage` | `chmod +x` 后直接运行 |
+| Android | `Cubeloom-Android-<版本>-debug.apk` | 传到手机安装（允许未知来源），打开 App |
+
+> 产物**未签名**：Windows 首次运行会弹 SmartScreen（更多信息 → 仍要运行）；macOS 需要
+> `xattr -dr com.apple.quarantine /Applications/Cubeloom.app`；Android 是 debug 签名，仅自用/测试。
+
+### Windows（EXE）
+
+1. 下载 `Setup` 安装包或 zip，安装/解压后启动 Cubeloom，面板在应用窗口里打开；
+2. 同一台电脑上进游戏：`/connect ws://127.0.0.1:11451`；
+3. 日志、面板口令在 `%APPDATA%\Cubeloom`。
+
+### Linux（AppImage）
 
 ```bash
-npm run build          # 预编译 server / desktop / mobile 三套产物
-npm run dist:linux     # dist-app/Cubeloom-<版本>.AppImage
-npm run dist:win       # Windows 安装包（在 Windows 或 CI 上跑）
-npm run dist:mac       # macOS dmg（在 macOS 或 CI 上跑）
+chmod +x Cubeloom-*.AppImage
+./Cubeloom-*.AppImage
+# 没有 FUSE 的发行版：
+./Cubeloom-*.AppImage --appimage-extract-and-run
 ```
 
-- 打包后的 App 自带 Node 运行时，用户不需要另装 Node；
-- 面板在应用窗口里打开，游戏仍然 `/connect ws://127.0.0.1:11451`；
-- 日志/口令/临时文件写到系统 userData 目录，安装目录保持只读也能跑；
-- CI 的 `Desktop build` workflow 在 tag `v*` 或手动触发时构建三平台**未签名**产物。
-- 细节与已知限制：[packaging/desktop/README.md](packaging/desktop/README.md)
+数据在 `~/.config/Cubeloom`。游戏内 `/connect ws://127.0.0.1:11451`。
 
-### 手机端
+### Android（APK）
 
-- **Termux（今天就能用）**：`packaging/mobile/termux-install.sh`，手机同机
-  `/connect ws://127.0.0.1:11451`，面板在浏览器打开；
-- **独立 APK**：需要把 Node 运行时塞进 APK（nodejs-mobile，Node 18），
-  仓库已经产出 `build/mobile/nodejs-project/`（`main.cjs` / `admin-server.cjs` /
-  预构建几何库 / 面板资源），但 JNI 桥与 Gradle 工程尚未构建，因此暂无 `.apk`；
-- 路线、步骤与工作量估计：[packaging/mobile/README.md](packaging/mobile/README.md)
+1. 安装 APK（允许未知来源），打开 Cubeloom；首次启动会把 Node 服务解压到应用私有目录；
+2. 等面板出现后，同一台手机进游戏：`/connect ws://127.0.0.1:11451`；
+3. 面板就是 App 内的 WebView；日志在应用私有目录 `files/cubeloom/nodejs-project/logs`；
+4. APK 内置 Node 18（nodejs-mobile），不需要 Termux；想用自己编译的 Node 可以走
+   [packaging/mobile/README.md](packaging/mobile/README.md) 的 Termux 方案。
+
+### 从源码构建
+
+```bash
+npm run build          # server / desktop / portable / mobile bundle
+npm run dist:linux     # AppImage；Windows/macOS 用 dist:win / dist:mac
+npm run build:android  # APK；需要 Android SDK + NDK 27 + Gradle 8.13
+```
 
 ## 安全说明
 
@@ -285,7 +306,6 @@ npm run dist:mac       # macOS dmg（在 macOS 或 CI 上跑）
 
 自测：`npm run check:sandbox`（39 项断言）+ `npm test`（74 条：沙箱逃逸/修补器/坐标契约/格式解析/鉴权/发送队列/网易桥/托管机器人）。
 
-> 维护与风险清单：见 [docs/维护手册.md](docs/维护手册.md)。
 
 ## 目录
 
@@ -294,33 +314,15 @@ main.ts              WS 服务
 admin-server.ts      本地管理面板
 cli.mjs              终端交互版
 netease-service.ts   网易版事件桥
-src/                 结构解析 / NBT / 格式 / 沙箱 / 会话
+src/                 结构解析 / NBT / 格式 / 沙箱 / 会话 / 发送队列 / 网易桥
 admin/               面板前端（原生 HTML/CSS/JS，无构建）
+packaging/           desktop（Electron）/ android（APK）/ mobile / portable / netease-bot
+vendor/ntvector/     随仓库分发的网易机器人（MIT，含校验值）
+test/                回归测试（node --test，74 条）
+tools/               构建、打包、自测脚本
 deploy/              systemd 单元模板
-docs/                协议基线、CLI 说明、移植笔记、维护手册与风险清单
-tools/               set-password.mjs、check-sandbox.ts
-test/                数据层回归测试（node --test：修补器 / 坐标契约 / 解析）
 tsconfig.json        类型检查配置（npm run typecheck）
 ```
-
-## 与上游的关系
-
-Cubeloom 是 [CyanQiuper-Builder](https://github.com/Diamond-Minec/CyanQiuper-Builder) 的社区分支，
-**移除了全部商业化模块**（用户中心、订阅计费、支付回调、插件市场、多实例编排），只保留工具本体。
-
-谱系：
-
-```
-Diamond-Minec/CyanQiuper-Builder (MIT)
-        │  本项目 fork 并剥离商业模块，改为 AGPL-3.0
-        ▼
-xiaopi668/cubeloom (AGPL-3.0)
-```
-
-上游署名与保留的 MIT 声明都写在 [NOTICE](NOTICE) 里。落块层、回显层、命令沙箱
-与会话的注入逻辑均为独立实现，只保留导出名、类型字段名这类接口形状。
-
-运行时依赖：`@pureeval/voxel-geometry`（VoxelGeometry，AGPL-3.0）、`mcpews`（MIT）、`ws`（MIT）。
 
 ## 已知限制
 

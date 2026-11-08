@@ -12,6 +12,7 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 import * as os from "node:os";
 import * as readline from "node:readline";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 const APP_NAME = "Cubeloom";
@@ -508,6 +509,8 @@ sseTicker.unref?.();
 
 /** ===== WS 子进程管理 ===== */
 let wsChild: ChildProcess | null = null;
+/** 移动端（Android）没有 spawn 子进程的能力：WS 服务以同进程方式加载 */
+let wsInProcess = false;
 let wsStartedAt = 0;
 let lastWsExit: { code: number | null; at: number } | null = null;
 
@@ -518,9 +521,28 @@ function pipeChild(d: Buffer, isErr: boolean) {
 }
 
 function spawnWs(): boolean {
-  if (wsChild) return false;
+  if (wsChild || wsInProcess) return false;
   // 打包运行时（Electron/便携版）没有 tsx，也没有 main.ts：直接跑预编译的 server/main.cjs
   const packagedEntry = (process.env.FB_WS_ENTRY || "").trim();
+  // Android / nodejs-mobile 不能 spawn 新的 Node 进程：同进程 require 预编译的 main.cjs
+  if (process.env.FB_WS_INPROCESS === "1") {
+    if (!packagedEntry) {
+      log("[ERROR] FB_WS_INPROCESS=1 但没有设置 FB_WS_ENTRY");
+      return false;
+    }
+    try {
+      const entry = path.resolve(packagedEntry);
+      const req = typeof require === "function" ? require : createRequire(path.join(ROOT, "noop.js"));
+      req(entry);
+      wsInProcess = true;
+      wsStartedAt = Date.now();
+      log("WS 服务已同进程启动（移动端模式）");
+      return true;
+    } catch (e: any) {
+      log(`[ERROR] 同进程启动 WS 失败：${e?.message ?? e}`);
+      return false;
+    }
+  }
   let cmd: string;
   let args: string[];
   if (packagedEntry) {
@@ -582,6 +604,10 @@ function killTree(pid: number) {
 }
 
 function stopWs(): boolean {
+  if (wsInProcess) {
+    log("移动端 WS 与面板同进程，无法单独停止");
+    return false;
+  }
   if (!wsChild?.pid) return false;
   const pid = wsChild.pid;
   log(`停止 WS 服务（PID ${pid}）`);
@@ -926,7 +952,7 @@ const server = createServer(async (req, res) => {
           pid: process.pid,
           startedAt: WEB_STARTED_AT,
           uptime: Date.now() - WEB_STARTED_AT,
-          ownsWs: !!wsChild,
+          ownsWs: !!wsChild || wsInProcess,
           hostname: SYS.hostname,
           platform: SYS.platform,
           nodeVersion: SYS.nodeVersion,
@@ -936,12 +962,12 @@ const server = createServer(async (req, res) => {
           memTotal: SYS.memTotal,
         },
         ws: ws
-          ? { ...ws, owned: !!wsChild, startedAt: wsStartedAt || ws.startedAt }
+          ? { ...ws, owned: !!wsChild || wsInProcess, startedAt: wsStartedAt || ws.startedAt }
           : {
               running: false,
               port: WS_PORT,
               error: lastWsExit ? `WS 服务已退出（code=${lastWsExit.code}）` : "WS 服务未运行",
-              owned: !!wsChild,
+              owned: !!wsChild || wsInProcess,
             },
         config: {
           wsPort: WS_PORT,

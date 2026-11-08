@@ -1,9 +1,10 @@
 name: Desktop build
 
 on:
-  workflow_dispatch:
   push:
+    branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
 
 jobs:
   desktop:
@@ -42,3 +43,14 @@ jobs:
             dist-app/*.zip
             dist-app/*.dmg
           if-no-files-found: ignore
+      - name: 附加到 Release（tag）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-app/*.AppImage
+            dist-app/*.tar.gz
+            dist-app/*.exe
+            dist-app/*.zip
+            dist-app/*.dmg
+          fail_on_unmatched_files: false

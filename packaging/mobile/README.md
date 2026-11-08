@@ -1,56 +1,77 @@
-# 手机端（Android）
+# 手机端（Android APK / Termux）
 
-结论：**能跑，但现在只有"Termux 版"是今天就能用的；独立 APK 需要把 Node 运行时塞进 APK，
-要做 nodejs-mobile 移植（Node 18），仓库里已经把需要的 bundle 产好了。**
+安卓版把 Node 运行时（nodejs-mobile，Node 18.20.4）和 Cubeloom 服务一起打进 APK：
+打开 App → 本地起服务 → WebView 打开面板 → 游戏里 `/connect ws://127.0.0.1:11451`。
+不需要 Termux，也不需要另装 Node。
 
-## 路线 A：Termux（现在可用，无需 APK）
+## 下载
+
+GitHub Actions 的 **Android build** workflow（push main / tag `v*`）会产出：
+
+```
+Cubeloom-Android-<版本>-debug.apk
+```
+
+安装时允许「未知来源」。APK 是 **debug 签名、未上架**，仅自用/测试。
+
+## 本地构建
+
+前置：Android SDK（platform 36）、NDK `27.0.12077973`、Gradle 8.13、Node 20。
 
 ```bash
-# 在 Termux 里
+npm ci
+npm run build          # 生成 build/mobile/nodejs-project
+npm run build:android  # 产物 dist-app/Cubeloom-Android-<版本>-debug.apk
+```
+
+`tools/build-android.mjs` 会：
+
+1. 取 `nodejs-mobile-react-native@18.20.4` 的 `libnode.so`（arm64-v8a / x86_64）与 Node 头文件（首次约 100MB，缓存在 `build/cache/`）；
+2. 把 `build/mobile/nodejs-project` 复制进 `app/src/main/assets/`；
+3. 生成 `local.properties`，调用 Gradle `assembleDebug`；
+4. 把 APK 复制到 `dist-app/`。
+
+想用系统自带的 Gradle：`GRADLE_BIN=$(which gradle) npm run build:android`。
+
+## 结构
+
+```
+packaging/android/
+  app/src/main/java/io/github/cubeloom/MainActivity.java   等 11452 → WebView 打开面板
+  app/src/main/java/io/github/cubeloom/NodeRuntime.java    解压 assets、setenv、启动 Node
+  app/src/main/cpp/native-lib.cpp                          JNI → node::Start()
+  app/src/main/cpp/CMakeLists.txt                         链接预编译 libnode.so
+  app/src/main/assets/nodejs-project/                     构建时生成（gitignore）
+  app/src/main/jniLibs/<abi>/libnode.so                   构建时生成（gitignore）
+```
+
+运行时环境变量（NodeRuntime 里设置）：
+
+```
+FB_APP_ROOT / FB_WS_ENTRY / FB_FORCE_ENTRY / FB_NO_REPL / FB_NO_OPEN
+FB_GEOMETRY_BUNDLE / FB_LOG_DIR / FB_ADMIN_HOST / FB_ADMIN_PORT / FB_WS_PORT / FB_CONTROL_PORT
+```
+
+日志：应用私有目录 `files/cubeloom/nodejs-project/logs/`（`adb logcat -s CubeloomNode` 也能看）。
+
+## 限制
+
+- **minSdk 24（Android 7.0）**，arm64-v8a + x86_64 两个 ABI；
+- Node 18（nodejs-mobile 最后版本），不是 Node 20；
+- 面板在 WebView 里，没有原生后台常驻：切后台可能被系统冻结，正在导入时建议保持前台；
+- 网易版机器人（NTvector）是 Windows 程序，Android 上仍需 Termux + 外部机器人，APK 只带 WS 版；
+- 16KB 页大小的新机型如果装不上，需要换 16KB 对齐的 libnode 构建（上游 nodejs-mobile 未更新）。
+
+## Termux（备用）
+
+不想装 APK 或要自己换 Node 版本：
+
+```bash
 pkg install -y nodejs git
 git clone https://github.com/xiaopi668/cubeloom.git
-cd cubeloom
-npm install
+cd cubeloom && npm install
 termux-wake-lock
 FB_NO_OPEN=1 npm run admin
 ```
 
-- 游戏（同一台手机）里 `/connect ws://127.0.0.1:11451`，回环连接免验证；
-- 手机浏览器打开 `http://127.0.0.1:11452` 看面板；
-- 息屏后进程会被杀：先 `termux-wake-lock`，并在系统设置里给 Termux 关掉电池优化；
-- 也可以直接用打包产物：`node tools/build.mjs` 后把 `build/portable/` 拷到手机，
-  需要系统 Node（Termux 的 nodejs 包）即可跑 `./start.sh`。
-
-## 路线 B：独立 APK（需要移植，未构建）
-
-Android 上"本地监听一个 WebSocket 端口"必须有 Node 运行时。可行方案是
-[nodejs-mobile](https://github.com/nodejs-mobile/nodejs-mobile)（内置 Node 18.20.4）：
-
-1. 新建 Android 工程（Gradle + AGP），把 nodejs-mobile 的
-   `libnode.so`（arm64-v8a / x86_64）放进 `jniLibs`，用官方 JNI 桥启动 Node；
-2. 把本仓库生成的 `build/mobile/nodejs-project/` 整个放进 `assets/nodejs-project/`
-   （`main.cjs` / `admin-server.cjs` / `voxel-geometry.iife.js` / `admin/`），
-   入口是 `admin-server.cjs`；
-3. 启动参数（环境变量）：
-   ```
-   FB_APP_ROOT=<app 私有目录>
-   FB_WS_ENTRY=<assets>/main.cjs
-   FB_FORCE_ENTRY=1 FB_NO_REPL=1 FB_NO_OPEN=1
-   FB_GEOMETRY_BUNDLE=<assets>/voxel-geometry.iife.js
-   FB_ADMIN_PORT=11452 FB_WS_PORT=11451 FB_CONTROL_PORT=11453
-   FB_LOG_DIR=<app 私有目录>/logs
-   ```
-4. 用 WebView 打开 `http://127.0.0.1:11452`；申请 `INTERNET` 权限，
-   Android 9+ 还要允许明文 HTTP（`usesCleartextTraffic=true`，仅回环）；
-5. 前台服务 + 常驻通知，避免后台被冻结；
-6. 游戏客户端与 App 在同一台手机上，`/connect ws://127.0.0.1:11451`。
-
-**还没做的部分**（所以暂无 `.apk`）：
-
-- JNI 桥与 Gradle 工程（需要 Android NDK；本机 SDK 已装，NDK 未装）；
-- nodejs-mobile 的 Node 18 与 `node:vm` 行为差异需要真机验证；
-- 应用图标、签名、上架/分发策略；
-- 如果目标是"零 Node 依赖"，只能原生重写服务端（不现实，结构解析/沙箱都在 Node 侧）。
-
-工作量估计：能跑的 debug APK 约 1~2 天（含 NDK 安装与桥接调试），可发布版本再加
-图标/前台服务/签名/兼容性验证 1~2 天。需要的话可以单开一个任务做。
+同一台手机进游戏 `/connect ws://127.0.0.1:11451`，浏览器开面板 `http://127.0.0.1:11452`。

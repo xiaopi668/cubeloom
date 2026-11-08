@@ -1,0 +1,48 @@
+name: Android build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  android:
+    name: APK (debug)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: 安装 NDK / CMake
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "ndk;27.0.12077973" "cmake;3.22.1"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+      - name: 预编译 server / mobile bundle
+        run: npm run build
+      - name: 构建 APK
+        run: npm run build:android
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cubeloom-android
+          path: dist-app/*.apk
+          if-no-files-found: error
+      - name: 附加到 Release（tag）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-app/*.apk
+          fail_on_unmatched_files: false

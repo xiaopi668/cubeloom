@@ -1,7 +1,6 @@
 # Cubeloom 开发文档
 
 本文档面向二次开发/维护者，说明项目结构、运行时架构、数据模型、HTTP 接口与关键设计决策。
-架构分析与风险清单见 [docs/维护手册.md](docs/维护手册.md)。
 
 ## 1. 技术栈
 
@@ -42,7 +41,6 @@ tools/               set-password.mjs、check-sandbox.ts、build.mjs（打包预
 deploy/              systemd 单元模板（cubeloom、cubeloom-netease）
 packaging/           分发：portable 启动脚本、desktop（Electron）、mobile（Termux / nodejs-mobile）
 vendor/ntvector/     随仓库分发的 NTvector 官方 release（MIT）+ 校验信息
-docs/                协议基线、CLI 说明、移植笔记、维护手册
 netease/             网易版配置样例（*.example）
 logs/                运行日志（运行时生成，已 gitignore）
 ```

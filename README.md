@@ -1,5 +1,9 @@
 # Cubeloom
 
+[![CI](https://github.com/xiaopi668/cubeloom/actions/workflows/ci.yml/badge.svg)](https://github.com/xiaopi668/cubeloom/actions/workflows/ci.yml)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-informational.svg)](.github/workflows/ci.yml)
+
 > WebSocket based Minecraft Bedrock structure generator —— 把方块织成建筑。
 
 在电脑或手机上跑一个本地服务，游戏里 `/connect ws://127.0.0.1:11451` 连上去，

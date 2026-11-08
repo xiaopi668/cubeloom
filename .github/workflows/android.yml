@@ -20,11 +20,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - name: 安装 NDK / CMake
+      - name: 安装 NDK / CMake（用 runner 自带的 Android SDK）
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "ndk;27.0.12077973" "cmake;3.22.1"
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(command -v sdkmanager)"; fi
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "ndk;27.0.12077973" "cmake;3.22.1"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'

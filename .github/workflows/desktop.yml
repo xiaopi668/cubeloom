@@ -42,7 +42,17 @@ jobs:
         if: matrix.os != 'windows-latest'
         env:
           FB_ENGINE_JOBS: '4'
-        run: npm run build:engine
+        run: |
+          set -o pipefail
+          node -e "console.log('platform=',process.platform,'arch=',process.arch);console.log(require('child_process').execSync('cmake --version').toString().split('\n')[0])"
+          npm run build:engine 2>&1 | tee /tmp/engine-build.log
+      - name: 上传原生引擎构建日志（失败时）
+        if: failure() && matrix.os != 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-build-log-${{ matrix.os }}
+          path: /tmp/engine-build.log
+          if-no-files-found: ignore
       - name: 校验原生引擎
         if: matrix.os != 'windows-latest'
         run: test -x netease-bot/ntvector-native/Program

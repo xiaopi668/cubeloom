@@ -38,6 +38,11 @@ public final class NodeRuntime {
         File root = new File(filesDir, "cubeloom");
         File project = new File(root, "nodejs-project");
         copyAssets(context.getAssets(), ASSET_ROOT, project);
+        File engine = new File(root, "netease-bot/ntvector-native");
+        copyAssets(context.getAssets(), "engine", engine);
+        String abi = android.os.Build.SUPPORTED_ABIS.length > 0 ? android.os.Build.SUPPORTED_ABIS[0] : "arm64-v8a";
+        copyAssets(context.getAssets(), "engine-lib-dynload/" + abi,
+                new File(engine, "python312/lib/python3.12/lib-dynload"));
 
         String rootPath = project.getAbsolutePath();
         setenv("FB_APP_ROOT", rootPath);
@@ -47,6 +52,16 @@ public final class NodeRuntime {
         setenv("FB_NO_REPL", "1");
         setenv("FB_NO_OPEN", "1");
         setenv("FB_GEOMETRY_BUNDLE", rootPath + "/voxel-geometry.iife.js");
+        setenv("FB_NETEASE_ENTRY", rootPath + "/netease-service.cjs");
+        setenv("FB_NETEASE_INPROCESS", "1");
+        setenv("FB_NETEASE_BOT_DIR", root.getAbsolutePath() + "/netease-bot");
+        setenv("FB_NETEASE_ENGINE", context.getApplicationInfo().nativeLibraryDir + "/libcubeloom_engine.so");
+        setenv("FB_X19LOGIN", context.getApplicationInfo().nativeLibraryDir + "/libx19login.so");
+        setenv("VECTOR_PYTHON_HOME", engine.getAbsolutePath() + "/python312");
+        setenv("VECTOR_SOURCE_DIR", engine.getAbsolutePath() + "/source");
+        setenv("VECTOR_PLUGIN_DIR", engine.getAbsolutePath() + "/scripts");
+        String libPath = context.getApplicationInfo().nativeLibraryDir + ":" + engine.getAbsolutePath() + "/python312/lib";
+        setenv("LD_LIBRARY_PATH", libPath + ":" + (System.getenv("LD_LIBRARY_PATH") != null ? System.getenv("LD_LIBRARY_PATH") : ""));
         setenv("FB_LOG_DIR", rootPath + "/logs");
         setenv("FB_ADMIN_HOST", "127.0.0.1");
         setenv("FB_ADMIN_PORT", "11452");

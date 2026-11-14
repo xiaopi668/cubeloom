@@ -195,7 +195,7 @@ FB_NO_OPEN=1 npm run admin     # 面板 + WS 一起起；只要 WS 就换成 npm
 | Windows | 原生 Program.exe | `x19login.exe` | 安装包内置，直接进服 |
 | Linux | **原生 `Program`（不用 Wine）** | `x19login`（linux） | `npm run build:engine` 本地编译；CI 打 AppImage 时会自动构建。没构建原生引擎时才回退 Wine |
 | macOS | **原生 `Program`（不用 Wine）** | `x19login`（darwin） | `npm run build:engine` 用随包 Python 3.12 构建；CI 的 dmg 会自动带上。未构建时才回退 Wine/CrossOver |
-| Android | **不能直接跑**（Windows x64 引擎） | 不需要 | APK 用「连接电脑 / 服务器」远程模式；本机只做结构编辑/预览 |
+| Android | **原生 `libcubeloom_engine.so`**（arm64/x86_64） | `libx19login.so`（Go/NDK） | APK 内置 Chaquopy Python 3.12 + 引擎；`npm run build:engine:android` 构建。仍保留远程模式 |
 
 Linux/macOS 的引擎检测结果会显示在面板「网易账号 / 房间」下面；有原生 `Program` 时显示 `native`，没有时才回退 Wine。APK 的远程模式不受宿主平台限制，宿主可以是 Windows、Linux 或 macOS。
 
@@ -362,11 +362,13 @@ chmod +x Cubeloom-*.AppImage
 
 APK 有**两种运行方式**（右下角 ⚙ 随时切换）：
 
-1. **本机模式**：App 内启动 Node 18 服务，面板跑在手机里；同一台手机进游戏
-   `/connect ws://127.0.0.1:11451`。能编辑/预览结构，**但网易进服不行**——
-   NTvector 引擎是 Windows x64（Program.exe + 内嵌 CPython），Android 跑不起来。
+1. **本机模式**：App 内启动 Node 18 服务 + **Android 原生网易引擎**（Chaquopy Python 3.12），
+   账号登录（Go 助手 `libx19login.so`）、房间解析、机器人进服都在手机内完成；
+   同一台手机进游戏 `/connect ws://127.0.0.1:11451`。
 2. **远程模式**：直接填电脑/服务器的面板地址（如 `http://192.168.1.10:11452/`），
-   网易账号登录、房间解析、机器人进服都在那台 Windows 上完成，手机只当遥控器。
+   网易账号登录、房间解析、机器人进服都在那台机器上完成，手机只当遥控器。
+
+> Android 原生引擎为实验特性：已在 Waydroid x86_64（Android 13）验证引擎启动、Python 3.12、登录链路和 RakNet 连接；arm64 真机与“进服后事件桥导入”还需要用真实租赁服账号验证。APK 约 70 MB（含 Node 运行时、Python 3.12、两种 ABI 的引擎）。
 
 远程模式对方要允许局域网访问（面板里点一下就行）：
 
@@ -388,6 +390,7 @@ FB_ADMIN_HOST=0.0.0.0 npm run admin   # 必须先有 admin/auth.json 口令，�
 ```bash
 npm run build          # server / desktop / portable / mobile bundle
 npm run build:engine   # Linux/macOS 原生网易引擎（不用 Wine；CI 会自动跑）
+npm run build:engine:android  # Android arm64/x86_64 原生引擎（Chaquopy Python 3.12）
 npm run dist:linux     # AppImage；Windows/macOS 用 dist:win / dist:mac
 npm run build:android  # APK；需要 Android SDK + NDK 27 + Gradle 8.13
 ```

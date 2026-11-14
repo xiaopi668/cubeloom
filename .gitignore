@@ -41,6 +41,8 @@ packaging/android/local.properties
 packaging/android/.gradle/
 packaging/android/app/build/
 packaging/android/app/src/main/assets/nodejs-project/
+packaging/android/app/src/main/assets/engine/
+packaging/android/app/src/main/assets/engine-lib-dynload/
 packaging/android/app/src/main/jniLibs/
 packaging/android/app/src/main/cpp/libnode/
 packaging/android/app/.cxx/
@@ -53,3 +55,6 @@ network.json
 
 # 原生引擎构建缓存（源码 / Python / 构建目录）
 .cache/
+
+# Android 原生引擎构建产物
+packaging/engine/android/

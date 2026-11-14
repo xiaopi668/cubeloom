@@ -95,7 +95,7 @@ index 7ee6f391..29224fa6 100644
  
  int LogScrollOffset() {
 diff --git a/application/Python/PythonRuntime.cpp b/application/Python/PythonRuntime.cpp
-index e10081d0..f3b61926 100644
+index e10081d0..5b403f72 100644
 --- a/application/Python/PythonRuntime.cpp
 +++ b/application/Python/PythonRuntime.cpp
 @@ -1,8 +1,16 @@
@@ -115,7 +115,7 @@ index e10081d0..f3b61926 100644
  #include "PythonRuntime.h"
  #include "PythonApi.h"
  #include "fopmodule.h"
-@@ -42,7 +50,37 @@ static void SetPythonHome()
+@@ -42,7 +50,41 @@ static void SetPythonHome()
          Py_SetPythonHome(whome.c_str());
      }
  #else
@@ -139,6 +139,10 @@ index e10081d0..f3b61926 100644
 +        if (s != std::string::npos) home = p.substr(0, s) + "/python312";
 +    }
 +#endif
++    // Android/容器里 python312 不一定在可执行文件旁，可用环境变量指定
++    if (const char* envHome = getenv("VECTOR_PYTHON_HOME")) {
++        if (*envHome) home = envHome;
++    }
 +    std::wstring whome;
 +    {
 +        std::mbstate_t st{};
@@ -154,7 +158,17 @@ index e10081d0..f3b61926 100644
  #endif
  }
  
-@@ -495,7 +533,11 @@ void PythonRuntime::startUp()
+@@ -467,7 +509,8 @@ void PythonRuntime::startUp()
+ 			PyRun_SimpleStringFlags("print(sys.path)", nullptr);
+ 		}
+ 		// �����ű�·��
+-		std::string script_path = "./source";
++		const char* sourceEnv = getenv("VECTOR_SOURCE_DIR");
++		std::string script_path = (sourceEnv && *sourceEnv) ? sourceEnv : "./source";
+ 		m_script_path = script_path;
+ 
+ 		// ��ȡsys.path�б�
+@@ -495,7 +538,14 @@ void PythonRuntime::startUp()
  			PythonRuntime::runMethod(sys_path, "append", src, 0, "(s)", (void*)scripts_path.c_str());
  
  			// site-packages so third-party libraries (requests, etc.) are importable.
@@ -162,15 +176,53 @@ index e10081d0..f3b61926 100644
  			std::string site_path = "./python312/Lib/site-packages";
 +#else
 +			std::string site_path = "./python312/lib/python3.12/site-packages";
++			if (const char* homeEnv = getenv("VECTOR_PYTHON_HOME")) {
++				if (*homeEnv) site_path = std::string(homeEnv) + "/lib/python3.12/site-packages";
++			}
 +#endif
  			PythonRuntime::runMethod(sys_path, "append", src, 0, "(s)", (void*)site_path.c_str());
  		}
  		if (Params::logger)
+diff --git a/application/include/SLikeNet-master/CMakeLists.txt b/application/include/SLikeNet-master/CMakeLists.txt
+index be134583..7dadea4c 100644
+--- a/application/include/SLikeNet-master/CMakeLists.txt
++++ b/application/include/SLikeNet-master/CMakeLists.txt
+@@ -49,7 +49,9 @@ set(SLIKENET_LIBRARY_LIBS OpenSSL::Crypto OpenSSL::SSL)
+ IF (WIN32 AND NOT UNIX)
+ 	set(SLIKENET_LIBRARY_LIBS ${SLIKENET_LIBRARY_LIBS} ws2_32.lib)
+ ELSE(WIN32 AND NOT UNIX)
+-	set(SLIKENET_LIBRARY_LIBS ${SLIKENET_LIBRARY_LIBS} pthread)
++	IF(NOT ANDROID)
++		set(SLIKENET_LIBRARY_LIBS ${SLIKENET_LIBRARY_LIBS} pthread)
++	ENDIF()
+ ENDIF(WIN32 AND NOT UNIX)
+ 
+ # enable C++11 language support for GCC
+diff --git a/application/include/SLikeNet-master/Source/src/FileList.cpp b/application/include/SLikeNet-master/Source/src/FileList.cpp
+index 0283dc05..844025ca 100644
+--- a/application/include/SLikeNet-master/Source/src/FileList.cpp
++++ b/application/include/SLikeNet-master/Source/src/FileList.cpp
+@@ -19,13 +19,13 @@
+ 
+ #include <stdio.h> // RAKNET_DEBUG_PRINTF
+ #include "slikenet/assert.h"
+-#if defined(ANDROID)
++#if defined(ANDROID) && !defined(__ANDROID__)
+ #include <asm/io.h>
+ #elif defined(_WIN32) || defined(__CYGWIN__)
+ #include <io.h>
+ 
+ 
+-#elif !defined ( __APPLE__ ) && !defined ( __APPLE_CC__ ) && !defined ( __PPC__ ) && !defined ( __FreeBSD__ ) && !defined ( __S3E__ ) && !defined ( __aarch64__ )
++#elif !defined ( __ANDROID__ ) && !defined ( __APPLE__ ) && !defined ( __APPLE_CC__ ) && !defined ( __PPC__ ) && !defined ( __FreeBSD__ ) && !defined ( __S3E__ ) && !defined ( __aarch64__ )
+ #include <sys/io.h>
+ #endif
+ 
 diff --git a/cmake/BuildOpenSSL.cmake b/cmake/BuildOpenSSL.cmake
-index b365af9a..50387fe3 100644
+index b365af9a..318109b8 100644
 --- a/cmake/BuildOpenSSL.cmake
 +++ b/cmake/BuildOpenSSL.cmake
-@@ -79,6 +79,15 @@ else()
+@@ -79,6 +79,32 @@ else()
              endif()
              set(_OPENSSL_EXTRA_FLAGS "no-asm")
              set(_OPENSSL_PIC_FLAG "")
@@ -183,10 +235,57 @@ index b365af9a..50387fe3 100644
 +                set(_OPENSSL_EXTRA_FLAGS "no-asm")
 +            endif()
 +            set(_OPENSSL_PIC_FLAG "-fPIC")
++        elseif(PLATFORM_ANDROID)
++            if(CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
++                set(_OPENSSL_TARGET "linux-x86_64")
++                set(_ANDROID_TOOL_PREFIX "x86_64-linux-android")
++            else()
++                set(_OPENSSL_TARGET "linux-aarch64")
++                set(_ANDROID_TOOL_PREFIX "aarch64-linux-android")
++            endif()
++            set(_OPENSSL_EXTRA_FLAGS "no-asm")
++            set(_OPENSSL_PIC_FLAG "-fPIC")
++            # 构建脚本生成带 NDK target 的 gcc/g++ wrapper，避免 OpenSSL 自己找交叉工具链
++            if(DEFINED ENV{FB_NDK_WRAP} AND NOT "$ENV{FB_NDK_WRAP}" STREQUAL "")
++                set(_NDK_WRAP "$ENV{FB_NDK_WRAP}")
++            else()
++                set(_NDK_WRAP "/tmp/ndk-wrap")
++            endif()
++            set(_OPENSSL_TOOL_ARGS "CC=${_NDK_WRAP}/${_ANDROID_TOOL_PREFIX}-gcc")
          elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
              set(_OPENSSL_TARGET "linux-aarch64")
              set(_OPENSSL_EXTRA_FLAGS "no-asm")
-@@ -126,7 +135,7 @@ else()
+@@ -97,13 +123,23 @@ else()
+             no-shared no-tests no-dso
+             ${_OPENSSL_EXTRA_FLAGS}
+             ${_OPENSSL_PIC_FLAG}
++            ${_OPENSSL_TOOL_ARGS}
+         )
+-        execute_process(
+-            COMMAND ${PERL_EXECUTABLE} ${_OPENSSL_CONFIGURE_ARGS}
+-            WORKING_DIRECTORY "${_OPENSSL_BUILD}"
+-            RESULT_VARIABLE _result
+-            COMMAND_ECHO STDOUT
+-        )
++        if(PLATFORM_ANDROID)
++            execute_process(
++                COMMAND ${CMAKE_COMMAND} -E env "ANDROID_NDK_ROOT=${CMAKE_ANDROID_NDK}" "PATH=${_NDK_WRAP}:$ENV{PATH}" ${PERL_EXECUTABLE} ${_OPENSSL_CONFIGURE_ARGS}
++                WORKING_DIRECTORY "${_OPENSSL_BUILD}"
++                RESULT_VARIABLE _result
++                COMMAND_ECHO STDOUT
++            )
++        else()
++            execute_process(
++                COMMAND ${PERL_EXECUTABLE} ${_OPENSSL_CONFIGURE_ARGS}
++                WORKING_DIRECTORY "${_OPENSSL_BUILD}"
++                RESULT_VARIABLE _result
++                COMMAND_ECHO STDOUT
++            )
++        endif()
+         if(_result)
+             if(WIN32)
+                 message(WARNING "OpenSSL Configure failed, will try legacy .lib fallback")
+@@ -126,7 +162,7 @@ else()
                  )
              else()
                  execute_process(
@@ -196,10 +295,19 @@ index b365af9a..50387fe3 100644
                      RESULT_VARIABLE _result
                  )
 diff --git a/cmake/Platform.cmake b/cmake/Platform.cmake
-index 5fb2637b..1e6139d1 100644
+index 5fb2637b..3ff78ef2 100644
 --- a/cmake/Platform.cmake
 +++ b/cmake/Platform.cmake
-@@ -43,6 +43,10 @@ if(MSVC)
+@@ -29,6 +29,8 @@ if(NOT WIN32 AND NOT DEFINED PLATFORM_ANDROID)
+ endif()
+ if(PLATFORM_ANDROID)
+     message(STATUS "Platform: Android/Termux (Bionic libc, no libutil/librt)")
++    # 交叉编译时 libwebsockets 的 check_symbol_exists 会失败，手动告诉它 OpenSSL 3 的 API
++    add_compile_definitions(LWS_HAVE_BN_bn2binpad=1 LWS_HAVE_EC_POINT_get_affine_coordinates=1 LWS_HAVE_EC_KEY_new_by_curve_name=1 LWS_HAVE_ECDSA_SIG_set0=1 LWS_HAVE_EVP_MD_CTX_free=1 LWS_HAVE_EVP_aes_128_wrap=1 LWS_HAVE_EVP_aes_128_cfb8=1 LWS_HAVE_EVP_aes_128_cfb128=1 LWS_HAVE_EVP_aes_192_cfb8=1 LWS_HAVE_EVP_aes_192_cfb128=1 LWS_HAVE_EVP_aes_256_cfb8=1 LWS_HAVE_EVP_aes_256_cfb128=1 LWS_HAVE_EVP_aes_128_ofb=1 LWS_HAVE_EVP_aes_128_xts=1 LWS_HAVE_EVP_aes_128_ctr=1 LWS_HAVE_EVP_aes_128_ecb=1 LWS_HAVE_EVP_PKEY_new_raw_private_key=1 LWS_HAVE_HMAC_CTX_new=1 LWS_HAVE_OPENSSL_STACK=1 LWS_HAVE_RSA_SET0_KEY=1 LWS_HAVE_SSL_CTX_get0_certificate=1 LWS_HAVE_SSL_CTX_load_verify_file=1 LWS_HAVE_SSL_CTX_load_verify_dir=1 LWS_HAVE_SSL_CTX_set1_param=1 LWS_HAVE_SSL_CTX_set_ciphersuites=1 LWS_HAVE_SSL_CTX_set_keylog_callback=1 LWS_HAVE_SSL_CTX_SET_ECDH_AUTO=1 LWS_HAVE_SSL_EXTRA_CHAIN_CERTS=1 LWS_HAVE_SSL_get0_alpn_selected=1 LWS_HAVE_SSL_set_alpn_protos=1 LWS_HAVE_SSL_set_tlsext_host_name=1 LWS_HAVE_SSL_SET_INFO_CALLBACK=1 LWS_HAVE_SSL_SESSION_set_time=1 LWS_HAVE_SSL_SESSION_up_ref=1)
+ endif()
+ 
+ if(MSVC)
+@@ -43,6 +45,10 @@ if(MSVC)
      set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "MSVC runtime")
  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
      add_compile_options(-Wall -fPIC)
@@ -210,3 +318,47 @@ index 5fb2637b..1e6139d1 100644
      if(NOT PLATFORM_ANDROID)
          # Android Bionic 内置 pthread，不需要 -pthread 标志
          add_compile_options(-pthread)
+diff --git a/third_party/libwebsockets/lib/tls/openssl/lws-genhash.c b/third_party/libwebsockets/lib/tls/openssl/lws-genhash.c
+index 3afe948e..8d3506f0 100644
+--- a/third_party/libwebsockets/lib/tls/openssl/lws-genhash.c
++++ b/third_party/libwebsockets/lib/tls/openssl/lws-genhash.c
+@@ -62,7 +62,7 @@ lws_genhash_init(struct lws_genhash_ctx *ctx, enum lws_genhash_types type)
+ 	}
+ 
+ 	if (EVP_DigestInit_ex(ctx->mdctx, ctx->evp_type, NULL) != 1) {
+-		EVP_MD_CTX_destroy(ctx->mdctx);
++		EVP_MD_CTX_free(ctx->mdctx);
+ 
+ 		return 1;
+ 	}
+@@ -93,7 +93,7 @@ lws_genhash_destroy(struct lws_genhash_ctx *ctx, void *result)
+ 
+ 	(void)len;
+ 
+-	EVP_MD_CTX_destroy(ctx->mdctx);
++	EVP_MD_CTX_free(ctx->mdctx);
+ 	ctx->mdctx = NULL;
+ 
+ 	return ret;
+diff --git a/third_party/libwebsockets/lib/tls/openssl/openssl-client.c b/third_party/libwebsockets/lib/tls/openssl/openssl-client.c
+index b1e17714..40088d39 100644
+--- a/third_party/libwebsockets/lib/tls/openssl/openssl-client.c
++++ b/third_party/libwebsockets/lib/tls/openssl/openssl-client.c
+@@ -753,7 +753,7 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
+ 		 return 1;
+ 
+ 	if (EVP_DigestInit_ex(mdctx, EVP_sha256(), NULL) != 1) {
+-		EVP_MD_CTX_destroy(mdctx);
++		EVP_MD_CTX_free(mdctx);
+ 
+ 		return 1;
+ 	}
+@@ -804,7 +804,7 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
+ 
+ 	len = sizeof(hash);
+ 	EVP_DigestFinal_ex(mdctx, hash, &len);
+-	EVP_MD_CTX_destroy(mdctx);
++	EVP_MD_CTX_free(mdctx);
+ 
+ 	/* look for existing client context with same config already */
+ 

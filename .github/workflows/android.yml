@@ -23,6 +23,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
       - name: 安装 NDK / CMake（用 runner 自带的 Android SDK）
         run: |
           SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
@@ -34,6 +38,13 @@ jobs:
           gradle-version: '8.13'
       - name: 安装依赖
         run: npm ci --no-audit --no-fund
+      - name: 安装 patchelf
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+      - name: 构建 Android 原生网易引擎
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/27.0.12077973"
+          export FB_ENGINE_JOBS=4
+          npm run build:engine:android
       - name: 预编译 server / mobile bundle
         run: npm run build
       - name: 构建 APK

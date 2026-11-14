@@ -91,7 +91,7 @@ export class ManagedBot {
             env: process.env,
             stdio: ["ignore", "pipe", "pipe"],
             windowsHide: true,
-            detached: process.platform !== "win32",
+            detached: process.platform !== "win32" && process.platform !== "android",
           })
         : spawn(String(this.opts.command || ""), {
             shell: true,
@@ -99,7 +99,7 @@ export class ManagedBot {
             env: process.env,
             stdio: ["ignore", "pipe", "pipe"],
             windowsHide: true,
-            detached: process.platform !== "win32",
+            detached: process.platform !== "win32" && process.platform !== "android",
           });
     } catch (e: any) {
       this.lastError = e?.message ?? String(e);
@@ -166,7 +166,7 @@ export class ManagedBot {
     this.child = null;
     if (!child) return;
     try {
-      if (process.platform === "win32") child.kill();
+      if (process.platform === "win32" || process.platform === "android") child.kill();
       else if (child.pid) process.kill(-child.pid, "SIGTERM");
     } catch {
       try {

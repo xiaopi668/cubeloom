@@ -738,6 +738,8 @@ async function waitForWs(timeoutMs = 8000): Promise<any | null> {
 /** ===== 网易版服务 + 机器人托管 ===== */
 let neteaseChild: ChildProcess | null = null;
 let neteaseStartedAt = 0;
+/** Android：没有独立 Node 进程可 fork，netease-service 在 admin-server 进程内启动 */
+let neteaseInProcess = false;
 
 function readJsonFile(file: string): any | null {
   try {
@@ -1168,7 +1170,11 @@ async function resolveRoomForPanel(body: any) {
   };
 }
 
+/** 打包/Android 可通过 FB_NETEASE_ENGINE 指定引擎可执行文件（Android 必须放 nativeLibraryDir） */
+const FORCED_ENGINE = (process.env.FB_NETEASE_ENGINE || "").trim();
+
 function hasNativeEngine(): boolean {
+  if (FORCED_ENGINE) return fs.existsSync(FORCED_ENGINE);
   if (IS_WIN) return false;
   return fs.existsSync(path.join(NETEASE_NATIVE_DIR, "Program"));
 }
@@ -1184,6 +1190,7 @@ function bridgeCfgPath(): string {
 }
 
 function engineExe(): string {
+  if (FORCED_ENGINE) return FORCED_ENGINE;
   return hasNativeEngine()
     ? path.join(NETEASE_NATIVE_DIR, "Program")
     : path.join(NETEASE_CORE_DIR, "Program.exe");
@@ -1214,7 +1221,7 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
   if (!fs.existsSync(engineExe())) {
     return { ok: false, error: `找不到引擎：${engineExe()}（先运行 npm run setup:netease-bot）` };
   }
-  if (!IS_WIN && !wineBinary()) {
+  if (!IS_WIN && !hasNativeEngine() && !wineBinary()) {
     return {
       ok: false,
       error: "Linux/macOS 上运行网易引擎需要 wine（sudo apt install wine / brew install --cask wine-stable），或改用 Windows",
@@ -1283,6 +1290,32 @@ function neteaseEntry(): { cmd: string; args: string[] } | null {
 
 function spawnNetease(botArgv?: string[]): { ok: boolean; error?: string } {
   if (neteaseChild) return { ok: false, error: "网易版服务已在运行" };
+
+  if (process.env.FB_NETEASE_INPROCESS === "1") {
+    try {
+      const bridge = readJsonFile(bridgeCfgPath()) || {};
+      process.env.FB_NETEASE_PORT = String(NETEASE_PORT);
+      process.env.FB_NETEASE_HOST = "127.0.0.1";
+      process.env.FB_NETEASE_SOCKET = "tcp://127.0.0.1:17999";
+      process.env.FB_NETEASE_TOKEN = String(bridge.token || "");
+      process.env.FB_LOG_DIR = LOG_DIR;
+      if (botArgv?.length) process.env.FB_NETEASE_BOT_ARGV = JSON.stringify(botArgv);
+      const entry = (process.env.FB_NETEASE_ENTRY || "").trim() || path.join(process.cwd(), "netease-service.cjs");
+      if (!fs.existsSync(entry)) return { ok: false, error: `找不到 ${entry}` };
+      const req = createRequire(path.join(ROOT, "noop.cjs"));
+      const mod = req(entry);
+      if (typeof mod?.startService === "function") mod.startService();
+      neteaseInProcess = true;
+      // 用当前进程占位，避免 UI 认为未启动；stop 时特殊处理
+      neteaseChild = { pid: process.pid } as unknown as ChildProcess;
+      neteaseStartedAt = Date.now();
+      log("网易版服务已在本进程内启动（Android）");
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: `进程内启动失败：${e?.message ?? e}` };
+    }
+  }
+
   const entry = neteaseEntry();
   if (!entry) return { ok: false, error: "找不到 netease-service（开发模式需要 tsx，打包版需要 server/netease-service.cjs）" };
   const bridge = readJsonFile(bridgeCfgPath()) || {};
@@ -1328,6 +1361,18 @@ function spawnNetease(botArgv?: string[]): { ok: boolean; error?: string } {
 }
 
 function stopNetease(): boolean {
+  if (neteaseInProcess) {
+    try {
+      const entry = (process.env.FB_NETEASE_ENTRY || "").trim() || path.join(process.cwd(), "netease-service.cjs");
+      const req = createRequire(path.join(ROOT, "noop.cjs"));
+      const mod = req(entry);
+      mod?.stopService?.();
+    } catch {}
+    neteaseInProcess = false;
+    neteaseChild = null;
+    log("网易版服务已停止（进程内）");
+    return true;
+  }
   if (!neteaseChild?.pid) return false;
   const pid = neteaseChild.pid;
   log(`停止网易版服务（PID ${pid}）`);

@@ -149,6 +149,7 @@ if (!onlyServer) {
   for (const [entry, out] of [
     ["main.ts", "main.cjs"],
     ["admin-server.ts", "admin-server.cjs"],
+    ["netease-service.ts", "netease-service.cjs"],
   ]) {
     buildSync({
       entryPoints: [path.join(ROOT, entry)],

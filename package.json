@@ -1,6 +1,6 @@
 {
   "name": "cubeloom",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Cubeloom - WebSocket based Minecraft Bedrock structure generator (voxel geometry + structure import + MIDI music box)",
   "main": "main.ts",
   "scripts": {
@@ -21,7 +21,8 @@
     "dist:mac": "npm run build && npx --yes electron-builder@26 --project build/desktop --mac --publish never",
     "setup:netease-bot": "node tools/setup-netease-bot.mjs",
     "build:x19login": "node tools/build-x19login.mjs",
-    "build:engine": "node tools/build-engine-native.mjs"
+    "build:engine": "node tools/build-engine-native.mjs",
+    "build:engine:android": "node tools/build-engine-android.mjs"
   },
   "repository": {
     "type": "git",

@@ -658,12 +658,19 @@ async function startBot() {
   bridge.connect();
 }
 
-function boot() {
+export function startService() {
   // 先让 /health 可用，再后台拉起机器人；否则面板会误判「服务没起来」
   server.listen(PORT, HOST, () => {
     log(`网易版服务已启动：http://${HOST}:${PORT}`);
     void startBot();
   });
+}
+
+/** 进程内停止（Android）：不退出宿主 Node 进程 */
+export function stopService() {
+  try { managedBot?.stop(); } catch {}
+  try { bridge.close(); } catch {}
+  try { server.close(); } catch {}
 }
 
 /** 退出时先把机器人收掉，避免孤儿进程占着游戏账号 */
@@ -678,4 +685,5 @@ process.on("exit", () => {
   try { managedBot?.stop(); } catch {}
 });
 
-boot();
+// 被 admin-server 以进程内方式 require 时由调用方 startService()，不要自动监听
+if (process.env.FB_NETEASE_INPROCESS !== "1") startService();

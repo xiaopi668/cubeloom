@@ -82,6 +82,27 @@ function writeLocalProperties() {
   fs.writeFileSync(path.join(ANDROID, "local.properties"), `sdk.dir=${sdk}\n`);
 }
 
+const ENGINE_STAGE = path.join(ROOT, "packaging", "engine", "android");
+const ENGINE_ABIS = ["arm64-v8a", "x86_64"];
+
+/** 把 npm run build:engine:android 的产物复制进 jniLibs（prepareNative 会清空 jniLibs） */
+function installEngineLibs() {
+  let installed = 0;
+  for (const abi of ENGINE_ABIS) {
+    const src = path.join(ENGINE_STAGE, abi);
+    if (!fs.existsSync(src)) continue;
+    const dst = path.join(JNI, abi);
+    fs.mkdirSync(dst, { recursive: true });
+    for (const name of fs.readdirSync(src)) {
+      if (!name.endsWith(".so")) continue;
+      fs.copyFileSync(path.join(src, name), path.join(dst, name));
+      installed++;
+    }
+  }
+  if (installed) console.log(`已加入 Android 原生引擎（${installed} 个 .so）`);
+  else console.warn("  [engine] 没有原生引擎产物；APK 只能远程模式（先跑 npm run build:engine:android）");
+}
+
 function build() {
   const gradle = process.env.GRADLE_BIN || path.join(ANDROID, "gradlew");
   const cmd = fs.existsSync(gradle) ? gradle : "gradle";
@@ -100,5 +121,6 @@ function build() {
 ensureMobileBuild();
 const pkgDir = ensureNodejsMobile();
 prepareNative(pkgDir);
+installEngineLibs();
 writeLocalProperties();
 build();

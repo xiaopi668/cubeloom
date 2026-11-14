@@ -57,8 +57,9 @@ jobs:
         if: failure() && matrix.os != 'windows-latest'
         run: |
           if [ -f /tmp/engine-build.log ]; then
-            msg=$(tail -n 25 /tmp/engine-build.log | tr '\n' ' ' | tr -d '\r' | cut -c1-8000)
-            echo "::error title=engine-build-tail::${msg}"
+            errs=$(grep -aE 'error:|fatal error|Error [0-9]|undefined|ld: |collect2|No such file|not found' /tmp/engine-build.log | tail -n 12 | tr '\n' ' ' | tr -d '\r' | cut -c1-6000)
+            [ -z "$errs" ] && errs=$(tail -n 25 /tmp/engine-build.log | tr '\n' ' ' | tr -d '\r' | cut -c1-6000)
+            echo "::error title=engine-build-errors::${errs}"
           fi
       - name: 校验原生引擎
         if: matrix.os != 'windows-latest'

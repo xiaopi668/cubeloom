@@ -53,6 +53,13 @@ jobs:
           name: engine-build-log-${{ matrix.os }}
           path: /tmp/engine-build.log
           if-no-files-found: ignore
+      - name: 原生引擎失败摘要（写进 annotation）
+        if: failure() && matrix.os != 'windows-latest'
+        run: |
+          if [ -f /tmp/engine-build.log ]; then
+            msg=$(tail -n 25 /tmp/engine-build.log | tr '\n' ' ' | tr -d '\r' | cut -c1-8000)
+            echo "::error title=engine-build-tail::${msg}"
+          fi
       - name: 校验原生引擎
         if: matrix.os != 'windows-latest'
         run: test -x netease-bot/ntvector-native/Program

@@ -152,10 +152,26 @@ index e10081d0..f3b61926 100644
  		}
  		if (Params::logger)
 diff --git a/cmake/BuildOpenSSL.cmake b/cmake/BuildOpenSSL.cmake
-index b365af9a..591a667d 100644
+index b365af9a..50387fe3 100644
 --- a/cmake/BuildOpenSSL.cmake
 +++ b/cmake/BuildOpenSSL.cmake
-@@ -126,7 +126,7 @@ else()
+@@ -79,6 +79,15 @@ else()
+             endif()
+             set(_OPENSSL_EXTRA_FLAGS "no-asm")
+             set(_OPENSSL_PIC_FLAG "")
++        elseif(APPLE)
++            if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
++                set(_OPENSSL_TARGET "darwin64-arm64-cc")
++                set(_OPENSSL_EXTRA_FLAGS "no-asm")
++            else()
++                set(_OPENSSL_TARGET "darwin64-x86_64-cc")
++                set(_OPENSSL_EXTRA_FLAGS "no-asm")
++            endif()
++            set(_OPENSSL_PIC_FLAG "-fPIC")
+         elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+             set(_OPENSSL_TARGET "linux-aarch64")
+             set(_OPENSSL_EXTRA_FLAGS "no-asm")
+@@ -126,7 +135,7 @@ else()
                  )
              else()
                  execute_process(

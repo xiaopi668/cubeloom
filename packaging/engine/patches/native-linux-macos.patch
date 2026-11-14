@@ -1,5 +1,5 @@
 diff --git a/application/CMakeLists.txt b/application/CMakeLists.txt
-index 7ce54947..e3bee278 100644
+index 7ce54947..f7d34b61 100644
 --- a/application/CMakeLists.txt
 +++ b/application/CMakeLists.txt
 @@ -1,14 +1,29 @@
@@ -55,6 +55,21 @@ index 7ce54947..e3bee278 100644
  
  # 编译定义
  target_compile_definitions(Program PRIVATE
+@@ -172,6 +194,14 @@ if(MSVC)
+         /OPT:REF
+         /OPT:ICF
+     )
++elseif(APPLE)
++    target_compile_options(Program PRIVATE
++        -fvisibility=hidden
++        -fvisibility-inlines-hidden
++    )
++    target_link_options(Program PRIVATE
++        -Wl,-dead_strip
++    )
+ else()
+     target_compile_options(Program PRIVATE
+         -fvisibility=hidden
 diff --git a/application/Core/VectorConsole.cpp b/application/Core/VectorConsole.cpp
 index 7ee6f391..29224fa6 100644
 --- a/application/Core/VectorConsole.cpp

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,26 @@ type loginRequest struct {
 	Cache    string `json:"cache"`
 	Project  string `json:"project"`
 	GV       string `json:"gv"`
+	// 恢复登录态（导出/保存的 token）用；兼容字符串/数字两种写法
+	EntityID flexUint64 `json:"entity_id"`
+	Token    string     `json:"token"`
+}
+
+// flexUint64 接受 JSON 数字或字符串（Node 侧 entity_id 是字符串）。
+type flexUint64 uint64
+
+func (f *flexUint64) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return fmt.Errorf("entity_id 需要是数字：%w", err)
+	}
+	*f = flexUint64(n)
+	return nil
 }
 
 type reply struct {
@@ -235,6 +256,21 @@ func isPhone11(s string) bool {
 func run(ctx context.Context, req *loginRequest) (*neteasex19.Session, error) {
 	req.Account = normalizeAccount(req.Account)
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+
+	// 刷新/恢复已有登录态：不碰账号密码，只用 entity_id + token
+	if mode == "refresh" || (mode == "" && req.EntityID > 0 && strings.TrimSpace(req.Token) != "") {
+		if req.EntityID == 0 || strings.TrimSpace(req.Token) == "" {
+			return nil, errors.New("恢复登录态需要 entity_id 与 token")
+		}
+		session := neteasex19.NewSession(uint64(req.EntityID), req.Token, nil)
+		if err := session.Refresh(ctx); err != nil {
+			return nil, fmt.Errorf("刷新登录态失败：%w", err)
+		}
+		if _, err := session.GetSelfDetail(ctx); err != nil {
+			notice("查询昵称失败（token 已刷新，仍然可用）：" + err.Error())
+		}
+		return session, nil
+	}
 	if mode == "" {
 		if req.Sauth != "" {
 			mode = "sauth"

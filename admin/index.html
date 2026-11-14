@@ -295,6 +295,15 @@
         <button class="btn small" id="nte-upstream-ack">我发好了，继续</button>
       </div>
       <div class="log-info" id="nte-login-state" style="margin-top:8px; white-space:normal">未登录</div>
+      <div class="sl-row" style="margin-top:6px">
+        <button class="btn small ghost" id="nte-session-export">导出登录态</button>
+        <button class="btn small ghost" id="nte-session-import">导入登录态</button>
+        <button class="btn small ghost" id="nte-session-refresh">刷新登录态</button>
+        <button class="btn small ghost" id="nte-session-clear">清除保存</button>
+        <input id="nte-session-file" type="file" accept=".json,application/json" style="display:none" />
+      </div>
+      <div class="log-info" id="nte-session-state" style="margin-top:4px; white-space:normal">登录态：未保存</div>
+      <div class="log-info" style="margin-top:2px; white-space:normal">登录态文件等同于账号凭据（含 token），导出后请妥善保管；导入/重启时会自动刷新 token。</div>
 
       <div class="sl-sub" style="margin-top:14px">房间</div>
       <div class="sl-form">
@@ -344,6 +353,7 @@
         <button class="btn small ghost" id="nte-svc-restart">重启</button>
       </div>
       <div class="log-info" id="nte-svc-state" style="margin-top:8px; white-space:normal">检测中…</div>
+      <div class="log-info" id="nte-engine-env" style="margin-top:4px; white-space:normal">引擎环境：检测中…</div>
 
       <details style="margin-top:14px">
         <summary class="log-info" style="cursor:pointer">高级：引擎版本 / 协议 / mc.cfg</summary>
@@ -351,6 +361,7 @@
           <input id="nte-engine-ver" type="text" placeholder="EngineVersion（默认 3.8.15.292807）" />
           <input id="nte-patch-ver" type="text" placeholder="PatchVersion（默认 3.8.16.292826）" />
           <input id="nte-protocol" type="number" placeholder="协议版本（可空，例如 860 / 898）" />
+          <input id="nte-lobby-version" type="text" placeholder="联机大厅版本（默认自动获取）" />
         </div>
         <div class="sl-form" style="margin-top:8px">
           <input id="nte-cfg-ip" type="text" placeholder="房间 IP" />
@@ -972,6 +983,7 @@
       engineVersion: $("nte-engine-ver").value.trim(),
       patchVersion: $("nte-patch-ver").value.trim(),
       protocol: $("nte-protocol").value.trim(),
+      lobbyVersion: $("nte-lobby-version").value.trim(),
       ...(patch || {}),
     };
     if (body.account === undefined) delete body.account;
@@ -1002,10 +1014,26 @@
     $("nte-engine-ver").value = c.engineVersion || "";
     $("nte-patch-ver").value = c.patchVersion || "";
     $("nte-protocol").value = c.protocol || "";
+    $("nte-lobby-version").value = c.lobbyVersion || "";
     nteRenderLogin(r.login);
+    $("nte-session-state").textContent = r.login?.saved
+      ? "登录态：已保存（重启后自动恢复并刷新 token）"
+      : "登录态：未保存";
     if (NTE_ACTIVE.includes(r.login.status)) ntePollLogin();
     const engine = r.engine && r.engine.installed ? "引擎已解压" : "引擎未解压（先运行 npm run setup:netease-bot）";
     $("nte-svc-state").textContent = `${engine} · ${r.canStart ? "服务可启动" : "缺少 netease-service"}`;
+    const env = r.env || {};
+    if (env.native) {
+      $("nte-engine-env").textContent = "引擎环境：Windows 原生";
+    } else if (env.platform === "android") {
+      $("nte-engine-env").textContent =
+        "引擎环境：Android 不能运行 Windows 引擎；请在 APK 右下角 ⚙ 切到「连接电脑 / 服务器」远程模式。";
+    } else if (env.wine) {
+      $("nte-engine-env").textContent = `引擎环境：${env.platform} + ${env.wine.version}（${env.wine.path}）`;
+    } else {
+      $("nte-engine-env").textContent =
+        `引擎环境：${env.platform || "?"}，未检测到 Wine。请安装 wine（macOS 可用 WineHQ/CrossOver/Whisky），或改用 APK 远程模式。`;
+    }
   }
 
   async function nteSearchRooms() {
@@ -1167,6 +1195,69 @@
   };
   nteUpdateRoomKind();
 
+  /* ---- 登录态：导出 / 导入 / 刷新 / 清除 ---- */
+  async function nteSessionExport() {
+    const r = await api("/api/netease-service/session/export");
+    if (!r || !r.ok) {
+      $("nte-session-state").textContent = "导出失败：" + ((r && r.error) || "当前没有登录态");
+      return;
+    }
+    const blob = new Blob([JSON.stringify(r.session, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `cubeloom-netease-session-${r.session.entity_id}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    $("nte-session-state").textContent = "已导出登录态文件（含 token，请妥善保管）";
+  }
+
+  async function nteSessionImport(file) {
+    if (!file) return;
+    let session;
+    try {
+      session = JSON.parse(await file.text());
+    } catch (e) {
+      $("nte-session-state").textContent = "导入失败：不是合法 JSON";
+      return;
+    }
+    $("nte-session-state").textContent = "正在导入并刷新…";
+    const r = await post("/api/netease-service/session/import", { session });
+    if (!r || !r.ok) {
+      $("nte-session-state").textContent = "导入失败：" + ((r && r.error) || "未知错误");
+      return;
+    }
+    $("nte-session-state").textContent = "登录态已导入并刷新";
+    nteRenderLogin(r.login);
+  }
+
+  async function nteSessionRefresh() {
+    $("nte-session-state").textContent = "正在刷新…";
+    const r = await post("/api/netease-service/session/refresh", {});
+    if (!r || !r.ok) {
+      $("nte-session-state").textContent = "刷新失败：" + ((r && r.error) || "请重新登录");
+      return;
+    }
+    $("nte-session-state").textContent = "登录态已刷新";
+    nteRenderLogin(r.login);
+  }
+
+  async function nteSessionClear() {
+    const r = await post("/api/netease-service/session/clear", {});
+    $("nte-session-state").textContent = r && r.ok ? "已清除保存的登录态" : "清除失败";
+  }
+
+  $("nte-session-export").onclick = nteSessionExport;
+  $("nte-session-import").onclick = () => $("nte-session-file").click();
+  $("nte-session-file").onchange = (ev) => {
+    const input = ev.target;
+    nteSessionImport(input.files && input.files[0]);
+    input.value = "";
+  };
+  $("nte-session-refresh").onclick = nteSessionRefresh;
+  $("nte-session-clear").onclick = nteSessionClear;
+
   /* ---- 高级：mc.cfg 旧方式 ---- */
   let nteCfg = null;
   async function nteLoadConfig() {
@@ -1254,7 +1345,7 @@
   $("nte-svc-start").onclick = () => nteServiceAction("start");
   $("nte-svc-stop").onclick = () => nteServiceAction("stop");
   $("nte-svc-restart").onclick = () => nteServiceAction("restart");
-  for (const id of ["nte-acct", "nte-room", "nte-room-pass", "nte-room-kind", "nte-display", "nte-engine-ver", "nte-patch-ver", "nte-protocol"]) {
+  for (const id of ["nte-acct", "nte-room", "nte-room-pass", "nte-room-kind", "nte-display", "nte-engine-ver", "nte-patch-ver", "nte-protocol", "nte-lobby-version"]) {
     $(id).addEventListener("change", () => nteSaveAccount({}));
   }
   document.getElementById("nte-cfg-file").onchange = (ev) => {

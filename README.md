@@ -188,6 +188,27 @@ FB_NO_OPEN=1 npm run admin     # 面板 + WS 一起起；只要 WS 就换成 npm
 | 运行平台 | 引擎是 Windows x64（Program.exe）：Windows 原生跑；Linux/macOS 装 Wine 也能跑（本机已验证引擎启动 → Python 3.12 → RakNet 初始化，真实进服待实测） |
 | 协议基线 | MCBE 1.21.130 / 协议 898，可用 `FB_NETEASE_PROTOCOL` 覆盖（基线常量见 `src/netease-protocol.ts`） |
 
+### 各平台怎么跑引擎
+
+| 平台 | 网易引擎 | 登录助手 | 说明 |
+|---|---|---|---|
+| Windows | 原生 Program.exe | `x19login.exe` | 安装包内置，直接进服 |
+| Linux | **原生 `Program`（不用 Wine）** | `x19login`（linux） | `npm run build:engine` 本地编译；CI 打 AppImage 时会自动构建。没构建原生引擎时才回退 Wine |
+| macOS | **原生 `Program`（不用 Wine）** | `x19login`（darwin） | `npm run build:engine` 用随包 Python 3.12 构建；CI 的 dmg 会自动带上。未构建时才回退 Wine/CrossOver |
+| Android | **不能直接跑**（Windows x64 引擎） | 不需要 | APK 用「连接电脑 / 服务器」远程模式；本机只做结构编辑/预览 |
+
+Linux/macOS 的引擎检测结果会显示在面板「网易账号 / 房间」下面；有原生 `Program` 时显示 `native`，没有时才回退 Wine。APK 的远程模式不受宿主平台限制，宿主可以是 Windows、Linux 或 macOS。
+
+Wine 相关环境变量：
+
+```bash
+FB_WINE=/path/to/wine          # 指定 wine 可执行文件（默认自动找 wine / wine64 / macOS 常见路径）
+WINEPREFIX=~/.wine-cubeloom    # 隔离的 Wine 前缀（首次会初始化，约 300–400 MB）
+FB_NETEASE_NO_WINE=1           # 禁用 Wine（例如你想手动用 CrossOver 启动）
+```
+
+首次运行 Wine 会初始化前缀；引擎不需要 .NET/Gecko，已经用 `WINEDLLOVERRIDES=mscoree,mshtml=` 抑制安装弹窗。
+
 ### 账号 + 房间（推荐，不用再导 mc.cfg）
 
 ```bash
@@ -228,6 +249,22 @@ admin-server ──X19 动态签名──> g79mclobt.minecraft.cn
 - 登录助手是 Go 写的（`tools/x19login`）：`npm run build:x19login` 构建本机版；
   `npm run build` 会自动产出 host + Windows 两个版本，打包时一起带进 `server/`。
 - 房间地址、MD5Token 的生成逻辑在 `src/netease-room.ts`，有固定向量单测（与 VQ 1.6.2 / NeteaseLogin 逐字节对齐）。
+
+### 免重复登录（保存 / 导出登录态）
+
+登录成功后会把 `entity_id + token` 存到 `netease-bot/session.json`（权限 0600），
+`admin-server` 启动时会自动读出来并调用登录助手刷新 token，所以重启面板/重开程序一般不用再登录。
+
+面板「网易账号 / 房间」下面有四个按钮：
+
+| 按钮 | 作用 |
+|---|---|
+| 导出登录态 | 下载 `cubeloom-netease-session-<uid>.json`，可带到别的机器导入 |
+| 导入登录态 | 选一个导出的 JSON，验证并刷新后直接登录 |
+| 刷新登录态 | 手动用当前 token 换新 token |
+| 清除保存 | 删除本地 `session.json`（当前会话仍可用，退出/重启后才需要重登） |
+
+> 登录态文件里的 token **等同于账号凭据**，不要发给别人；导入/导出走的是本机面板接口，面板本身仍需口令保护。
 
 ### 手动方式（mc.cfg / 环境变量）
 
@@ -350,6 +387,7 @@ FB_ADMIN_HOST=0.0.0.0 npm run admin   # 必须先有 admin/auth.json 口令，�
 
 ```bash
 npm run build          # server / desktop / portable / mobile bundle
+npm run build:engine   # Linux/macOS 原生网易引擎（不用 Wine；CI 会自动跑）
 npm run dist:linux     # AppImage；Windows/macOS 用 dist:win / dist:mac
 npm run build:android  # APK；需要 Android SDK + NDK 27 + Gradle 8.13
 ```

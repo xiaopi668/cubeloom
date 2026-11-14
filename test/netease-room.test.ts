@@ -15,6 +15,7 @@ import {
   joinRealmsByCode,
   listRealms,
   parseLocalEndpoint,
+  resetPeVersionCache,
   resolveLobbyRoom,
   resolveRealmsAddress,
   resolveRentalAddress,
@@ -156,6 +157,9 @@ test("联机大厅：搜索字段与签名，进房→取地址→退房的顺�
   const calls: Array<{ url: string; body: string; token: string }> = [];
   const fakeFetch = (async (url: string, init: any) => {
     calls.push({ url, body: init.body, token: init.headers["user-token"] });
+    if (url.includes("/status/MCVersion.json")) {
+      return new Response(JSON.stringify({ pe: "1.21.130" }), { status: 200 });
+    }
     if (url.endsWith("/online-lobby-room/query/search-by-name")) {
       return new Response(
         JSON.stringify({
@@ -175,13 +179,14 @@ test("联机大厅：搜索字段与签名，进房→取地址→退房的顺�
     return new Response("{}", { status: 404 });
   }) as unknown as typeof fetch;
 
+  resetPeVersionCache();
   const list = await searchLobbyRooms("生存", CRED, { fetchImpl: fakeFetch });
   assert.deepEqual(list, [
     { entityId: "888", name: "生存大厅", hasPwd: true, playerCount: 2, maxCount: 10, version: "1.21.120", lobbyManifestVersion: "mv1" },
   ]);
-  const searchCall = calls[0];
+  const searchCall = calls.find((c) => c.url.endsWith("/online-lobby-room/query/search-by-name"))!;
   assert.equal(searchCall.url, "https://g79mclobt.minecraft.cn/online-lobby-room/query/search-by-name");
-  assert.equal(searchCall.body, '{"room_name":"生存","res_id":"","version":"1.21.120","offset":0,"length":50}');
+  assert.equal(searchCall.body, '{"room_name":"生存","res_id":"","version":"1.21.130","offset":0,"length":50}');
   assert.equal(searchCall.token, dynamicToken("/online-lobby-room/query/search-by-name", searchCall.body, CRED.token));
 
   const resolved = await resolveLobbyRoom("888", "pw", CRED, { fetchImpl: fakeFetch });

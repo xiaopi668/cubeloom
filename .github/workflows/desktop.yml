@@ -38,6 +38,14 @@ jobs:
           cache: false
       - name: 解压网易机器人（内置到安装包）
         run: npm run setup:netease-bot
+      - name: 构建原生网易引擎（Linux/macOS，不用 Wine）
+        if: matrix.os != 'windows-latest'
+        env:
+          FB_ENGINE_JOBS: '4'
+        run: npm run build:engine
+      - name: 校验原生引擎
+        if: matrix.os != 'windows-latest'
+        run: test -x netease-bot/ntvector-native/Program
       - name: 预编译 server / desktop / mobile bundle
         run: npm run build
       - name: 校验登录助手已进包

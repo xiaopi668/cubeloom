@@ -37,6 +37,7 @@ function copyDir(src, dest) {
     const from = path.join(src, entry.name);
     const to = path.join(dest, entry.name);
     if (entry.isDirectory()) copyDir(from, to);
+    else if (entry.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(from), to);
     else fs.copyFileSync(from, to);
   }
 }

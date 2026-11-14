@@ -70,7 +70,7 @@ fs.writeFileSync(
 const startSh = path.join(OUT, "start-bot.sh");
 fs.writeFileSync(
   startSh,
-  `#!/usr/bin/env bash\n# NTvector 官方构建仅提供 Windows；Linux 请自行按 NTvector 文档构建后替换\ncd "$(dirname "$0")/ntvector"\nexec ./Program.exe --config mc.cfg --logger --no-ui\n`
+  `#!/usr/bin/env bash\n# NTvector 官方包是 Windows x64；Linux/macOS 用 Wine 跑（可用 FB_WINE 指定 wine 路径）\ncd "$(dirname "$0")/ntvector"\nexport WINEDEBUG="\${WINEDEBUG:--all}"\nexport WINEDLLOVERRIDES="\${WINEDLLOVERRIDES:-mscoree,mshtml=}"\nexec "\${FB_WINE:-wine}" Program.exe --config mc.cfg --logger --no-ui\n`
 );
 try { fs.chmodSync(startSh, 0o755); } catch {}
 

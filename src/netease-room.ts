@@ -220,7 +220,37 @@ export async function resolveRentalRoom(
 
 /** 联机大厅走 apigateway；房间搜索仍走 mclobt */
 const LOBBY_HOST = "https://g79apigatewayobt.minecraft.cn";
-export const DEFAULT_LOBBY_VERSION = "1.21.120";
+export const DEFAULT_LOBBY_VERSION = "1.21.130";
+
+/** 网易当前版本（PE/PC）会随更新变化；缓存 10 分钟，失败/异常时回退到 DEFAULT_LOBBY_VERSION */
+let peVersionCache: { version: string; at: number } | null = null;
+const PE_VERSION_TTL = 10 * 60_000;
+
+export async function currentPeVersion(fetchImpl: FetchLike = fetch): Promise<string> {
+  if (peVersionCache && Date.now() - peVersionCache.at < PE_VERSION_TTL) return peVersionCache.version;
+  try {
+    const res = await fetchImpl("https://www.vtbot.cn/status/MCVersion.json", {
+      signal: AbortSignal.timeout(5000),
+      headers: { "user-agent": "Cubeloom" },
+    });
+    if (res.ok) {
+      const data: any = await res.json();
+      const version = String(data?.pe ?? "").trim();
+      if (/^\d+\.\d+\.\d+$/.test(version)) {
+        peVersionCache = { version, at: Date.now() };
+        return version;
+      }
+    }
+  } catch {
+    /* 回退 */
+  }
+  return DEFAULT_LOBBY_VERSION;
+}
+
+/** 测试用：清掉版本缓存 */
+export function resetPeVersionCache(): void {
+  peVersionCache = null;
+}
 
 export type LobbyRoom = {
   entityId: string;
@@ -238,10 +268,11 @@ export async function searchLobbyRooms(
   cred: X19Credential,
   opts: X19PostOptions & { version?: string } = {}
 ): Promise<LobbyRoom[]> {
+  const version = opts.version || (await currentPeVersion(opts.fetchImpl || fetch));
   const body = JSON.stringify({
     room_name: String(keyword || "").trim(),
     res_id: "",
-    version: opts.version || DEFAULT_LOBBY_VERSION,
+    version,
     offset: 0,
     length: 50,
   });
@@ -297,7 +328,7 @@ export async function resolveLobbyRoom(
   keyword: string,
   password: string,
   cred: X19Credential,
-  opts: X19PostOptions = {}
+  opts: X19PostOptions & { version?: string } = {}
 ): Promise<{ server: LobbyRoom; address: RentalAddress }> {
   const list = await searchLobbyRooms(keyword, cred, opts);
   const key = String(keyword || "").trim();

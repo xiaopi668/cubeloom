@@ -1,0 +1,181 @@
+diff --git a/application/CMakeLists.txt b/application/CMakeLists.txt
+index 7ce54947..e3bee278 100644
+--- a/application/CMakeLists.txt
++++ b/application/CMakeLists.txt
+@@ -1,14 +1,29 @@
+ cmake_minimum_required(VERSION 3.20)
+ 
+-set(PY312_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/python312")
+-
+-add_library(Python3::Python SHARED IMPORTED)
+-set_target_properties(Python3::Python PROPERTIES
+-    IMPORTED_IMPLIB "${PY312_ROOT}/python312.lib"
+-    IMPORTED_LOCATION "${PY312_ROOT}/python312.dll"
+-    INTERFACE_INCLUDE_DIRECTORIES "${PY312_ROOT}/include")
+-
+-set(Python3_INCLUDE_DIRS "${PY312_ROOT}/include")
++if(WIN32)
++    set(PY312_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/python312")
++    add_library(Python3::Python SHARED IMPORTED)
++    set_target_properties(Python3::Python PROPERTIES
++        IMPORTED_IMPLIB "${PY312_ROOT}/python312.lib"
++        IMPORTED_LOCATION "${PY312_ROOT}/python312.dll"
++        INTERFACE_INCLUDE_DIRECTORIES "${PY312_ROOT}/include")
++    set(Python3_INCLUDE_DIRS "${PY312_ROOT}/include")
++else()
++    # Linux/macOS: 指向一个 Python 3.12 前缀（python-build-standalone / 系统安装均可）
++    if(NOT DEFINED PY312_ROOT OR "${PY312_ROOT}" STREQUAL "")
++        message(FATAL_ERROR "非 Windows 构建需要 -DPY312_ROOT=<python3.12 前缀>")
++    endif()
++    if(APPLE)
++        set(_PY312_LIB "${PY312_ROOT}/lib/libpython3.12.dylib")
++    else()
++        set(_PY312_LIB "${PY312_ROOT}/lib/libpython3.12.so")
++    endif()
++    add_library(Python3::Python SHARED IMPORTED)
++    set_target_properties(Python3::Python PROPERTIES
++        IMPORTED_LOCATION "${_PY312_LIB}"
++        INTERFACE_INCLUDE_DIRECTORIES "${PY312_ROOT}/include/python3.12")
++    set(Python3_INCLUDE_DIRS "${PY312_ROOT}/include/python3.12")
++endif()
+ 
+ # 收集所有源文件
+ file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
+@@ -59,6 +74,13 @@ list(FILTER APP_SOURCES EXCLUDE REGEX ".*/rotormodule\\.c$")
+ 
+ # 创建可执行目标
+ add_executable(Program ${APP_SOURCES} ${APP_HEADERS})
++if(NOT WIN32)
++    if(APPLE)
++        set_target_properties(Program PROPERTIES BUILD_RPATH "@loader_path/python312/lib" INSTALL_RPATH "@loader_path/python312/lib")
++    else()
++        set_target_properties(Program PROPERTIES BUILD_RPATH "$ORIGIN/python312/lib" INSTALL_RPATH "$ORIGIN/python312/lib")
++    endif()
++endif()
+ 
+ # 编译定义
+ target_compile_definitions(Program PRIVATE
+diff --git a/application/Core/VectorConsole.cpp b/application/Core/VectorConsole.cpp
+index 7ee6f391..29224fa6 100644
+--- a/application/Core/VectorConsole.cpp
++++ b/application/Core/VectorConsole.cpp
+@@ -705,7 +705,9 @@ void Present(const std::string& ansiFrame) {
+     }
+     // After re-pinning, rows below the header may still hold fragments from the
+     // old viewport position, so repaint the pane too (outside the write lock).
++#ifdef _WIN32
+     if (pinned) RedrawLogPane();
++#endif
+ #else
+     std::fwrite(ansiFrame.data(), 1, ansiFrame.size(), stdout);
+     std::fflush(stdout);
+@@ -744,7 +746,9 @@ void ScrollLog(int deltaLines) {
+         std::lock_guard<std::mutex> lock(g_mutex);
+         g_logScroll += deltaLines;
+     }
++#ifdef _WIN32
+     RedrawLogPane();
++#endif
+ }
+ 
+ int LogScrollOffset() {
+diff --git a/application/Python/PythonRuntime.cpp b/application/Python/PythonRuntime.cpp
+index e10081d0..f3b61926 100644
+--- a/application/Python/PythonRuntime.cpp
++++ b/application/Python/PythonRuntime.cpp
+@@ -1,8 +1,16 @@
+ // windows.h must come first in this TU so the Windows SDK headers parse before
+ // any `using namespace std;` (from project headers) can make std::byte collide
+ // with the SDK's `byte` typedef.
++#ifdef _WIN32
+ #include <windows.h>
++#elif defined(__APPLE__)
++#include <mach-o/dyld.h>
++#else
++#include <unistd.h>
++#include <limits.h>
++#endif
+ #include <stdlib.h>   // _putenv_s (VECTOR_PLUGIN_DIR)
++#include <cwchar>
+ #include "PythonRuntime.h"
+ #include "PythonApi.h"
+ #include "fopmodule.h"
+@@ -42,7 +50,37 @@ static void SetPythonHome()
+         Py_SetPythonHome(whome.c_str());
+     }
+ #else
+-    Py_SetPythonHome(L".");
++    // Linux: /proc/self/exe；macOS 用 _NSGetExecutablePath
++    std::string home = "python312";
++    char exe[4096] = {0};
++#ifdef __APPLE__
++    uint32_t size = sizeof(exe);
++    if (_NSGetExecutablePath(exe, &size) == 0) {
++        std::string p(exe);
++        size_t s = p.find_last_of("/");
++        if (s != std::string::npos) home = p.substr(0, s) + "/python312";
++    }
++#else
++    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
++    if (n > 0) {
++        exe[n] = 0;
++        std::string p(exe);
++        size_t s = p.find_last_of("/");
++        if (s != std::string::npos) home = p.substr(0, s) + "/python312";
++    }
++#endif
++    std::wstring whome;
++    {
++        std::mbstate_t st{};
++        const char* src = home.c_str();
++        size_t n = std::mbsrtowcs(nullptr, &src, 0, &st);
++        if (n != (size_t)-1) {
++            whome.resize(n);
++            src = home.c_str();
++            std::mbsrtowcs(&whome[0], &src, n, &st);
++        }
++    }
++    Py_SetPythonHome(whome.c_str());
+ #endif
+ }
+ 
+@@ -495,7 +533,11 @@ void PythonRuntime::startUp()
+ 			PythonRuntime::runMethod(sys_path, "append", src, 0, "(s)", (void*)scripts_path.c_str());
+ 
+ 			// site-packages so third-party libraries (requests, etc.) are importable.
++#ifdef _WIN32
+ 			std::string site_path = "./python312/Lib/site-packages";
++#else
++			std::string site_path = "./python312/lib/python3.12/site-packages";
++#endif
+ 			PythonRuntime::runMethod(sys_path, "append", src, 0, "(s)", (void*)site_path.c_str());
+ 		}
+ 		if (Params::logger)
+diff --git a/cmake/BuildOpenSSL.cmake b/cmake/BuildOpenSSL.cmake
+index b365af9a..591a667d 100644
+--- a/cmake/BuildOpenSSL.cmake
++++ b/cmake/BuildOpenSSL.cmake
+@@ -126,7 +126,7 @@ else()
+                 )
+             else()
+                 execute_process(
+-                    COMMAND make -j${_nproc}
++                    COMMAND make -j4
+                     WORKING_DIRECTORY "${_OPENSSL_BUILD}"
+                     RESULT_VARIABLE _result
+                 )
+diff --git a/cmake/Platform.cmake b/cmake/Platform.cmake
+index 5fb2637b..1e6139d1 100644
+--- a/cmake/Platform.cmake
++++ b/cmake/Platform.cmake
+@@ -43,6 +43,10 @@ if(MSVC)
+     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "MSVC runtime")
+ elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+     add_compile_options(-Wall -fPIC)
++    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
++        # GCC 14 把 -Wchanges-meaning 默认当错误；上游枚举/成员同名
++        add_compile_options(-Wno-changes-meaning)
++    endif()
+     if(NOT PLATFORM_ANDROID)
+         # Android Bionic 内置 pthread，不需要 -pthread 标志
+         add_compile_options(-pthread)

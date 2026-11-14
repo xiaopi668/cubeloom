@@ -49,10 +49,13 @@ export function isMainlandPhone(s: string): boolean {
   return /^1\d{10}$/.test(String(s ?? "").trim());
 }
 
-export type X19LoginMode = "email" | "phone" | "sms" | "sauth";
+export type X19LoginMode = "email" | "phone" | "sms" | "sauth" | "refresh";
 
 export type X19LoginRequest = {
   mode?: X19LoginMode;
+  /** mode=refresh：用已有登录态换新 token */
+  entityId?: string;
+  token?: string;
   account?: string;
   password?: string;
   sauth?: string;
@@ -168,10 +171,14 @@ export class X19LoginSession {
       this.fail("缺少网易登录助手（tools/x19login/bin/x19login），请先运行 npm run build:x19login");
       return;
     }
-    const payload: X19LoginRequest = {
+    const payload: any = {
       ...request,
       cache: request.cache || defaultDeviceCachePath(),
     };
+    if (request.entityId) {
+      payload.entity_id = request.entityId;
+      delete payload.entityId;
+    }
     this.log(`启动登录助手：${bin}`);
     let child: ChildProcessWithoutNullStreams;
     try {

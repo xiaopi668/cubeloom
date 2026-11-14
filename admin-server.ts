@@ -73,10 +73,13 @@ const ADMIN_DIR = path.join(ROOT, "admin");
 /** 网易机器人运行目录（打包时复制到 userData，开发时在仓库 netease-bot/） */
 const NETEASE_BOT_DIR = (process.env.FB_NETEASE_BOT_DIR || path.join(ROOT, "netease-bot")).trim();
 const NETEASE_CORE_DIR = path.join(NETEASE_BOT_DIR, "ntvector");
+/** 原生引擎目录（Linux/macOS 本地编译，不走 Wine） */
+const NETEASE_NATIVE_DIR = path.join(NETEASE_BOT_DIR, "ntvector-native");
 const NETEASE_MC_CFG = path.join(NETEASE_CORE_DIR, "mc.cfg");
-const NETEASE_BRIDGE_CFG = path.join(NETEASE_CORE_DIR, "scripts", "cubeloom_bridge", "cubeloom_bridge.json");
 /** 账号模式配置（只存账号/房间，不存密码；0600） */
 const NETEASE_ACCOUNT_CFG = path.join(NETEASE_BOT_DIR, "account.json");
+/** 保存的登录态（entity_id + token，0600），用于重启后免登录 */
+const NETEASE_SESSION_FILE = path.join(NETEASE_BOT_DIR, "session.json");
 const LOG_DIR = path.join(ROOT, "logs");
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const ADMIN_LOG = path.join(LOG_DIR, "admin.log");
@@ -760,31 +763,69 @@ function writeFileAtomic(file: string, text: string) {
 }
 
 /** Wine：Linux/macOS 上跑 Windows 引擎（Program.exe）的唯一实用方式 */
-let wineCache: string | null | undefined;
-function wineBinary(): string | null {
+type WineInfo = { bin: string; version: string };
+let wineInfoCache: WineInfo | null | undefined;
+
+/** macOS 上常见发行版的固定路径（WineHQ / CrossOver / Whisky） */
+const MAC_WINE_PATHS = [
+  "/Applications/Wine Stable.app/Contents/Resources/wine/bin/wine64",
+  "/Applications/Wine Stable.app/Contents/Resources/wine/bin/wine",
+  "/Applications/Wine Devel.app/Contents/Resources/wine/bin/wine64",
+  "/Applications/Wine Devel.app/Contents/Resources/wine/bin/wine",
+  "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine",
+  "/Applications/Whisky.app/Contents/Resources/wine/bin/wine64",
+];
+
+function wineInfo(): WineInfo | null {
   if (IS_WIN) return null;
   if ((process.env.FB_NETEASE_NO_WINE || "") === "1") return null;
-  if (wineCache !== undefined) return wineCache;
+  if (wineInfoCache !== undefined) return wineInfoCache;
   const forced = (process.env.FB_WINE || "").trim();
-  const candidates = forced ? [forced] : ["wine", "wine64", "/usr/bin/wine", "/usr/local/bin/wine"];
+  const candidates = forced
+    ? [forced]
+    : process.platform === "darwin"
+      ? [...MAC_WINE_PATHS, "wine64", "wine"]
+      : ["wine", "wine64", "/usr/bin/wine", "/usr/local/bin/wine", "/opt/wine-stable/bin/wine"];
   for (const bin of candidates) {
     try {
-      const r = spawnSync(bin, ["--version"], { stdio: "ignore", timeout: 5000 });
+      const r = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 5000 });
+      const out = `${r.stdout || ""}${r.stderr || ""}`.trim();
       if (r.status === 0) {
-        wineCache = bin;
-        return bin;
+        wineInfoCache = { bin, version: out.split(/\r?\n/)[0] || "wine" };
+        return wineInfoCache;
       }
     } catch {
       /* 继续找 */
     }
   }
-  wineCache = null;
+  wineInfoCache = null;
   return null;
+}
+
+function wineBinary(): string | null {
+  return wineInfo()?.bin ?? null;
+}
+
+/** 面板显示的运行环境：Windows 原生 / Linux+Wine / macOS+Wine / 缺少 Wine */
+function engineEnvSnapshot() {
+  if (IS_WIN) {
+    return { platform: "windows", native: true, engine: "native", wine: null as null | { path: string; version: string } };
+  }
+  if (hasNativeEngine()) {
+    return { platform: process.platform, native: true, engine: "native", wine: null };
+  }
+  const w = wineInfo();
+  return {
+    platform: process.platform,
+    native: false,
+    engine: w ? "wine" : "none",
+    wine: w ? { path: w.bin, version: w.version } : null,
+  };
 }
 
 /** 把「引擎 argv」包成当前平台能执行的形式：Windows 直接跑，其他平台套 wine */
 function engineArgvWithWine(argv: string[]): string[] | null {
-  if (IS_WIN) return argv;
+  if (IS_WIN || hasNativeEngine()) return argv;
   const wine = wineBinary();
   if (!wine) return null;
   return [wine, ...argv];
@@ -793,17 +834,30 @@ function engineArgvWithWine(argv: string[]): string[] | null {
 function neteaseBotCommand(): string | null {
   const forced = (process.env.FB_NETEASE_BOT_CMD || "").trim();
   if (forced) return forced;
-  const candidates = IS_WIN
-    ? [path.join(NETEASE_BOT_DIR, "start-bot.bat")]
-    : [path.join(NETEASE_BOT_DIR, "start-bot.sh")];
-  for (const c of candidates) if (fs.existsSync(c)) return c;
-  const exe = path.join(NETEASE_CORE_DIR, "Program.exe");
-  if (!fs.existsSync(exe)) return null;
-  if (!IS_WIN) {
-    const wine = wineBinary();
-    if (wine) return `WINEDEBUG=-all "${wine}" "${exe}" --config mc.cfg --logger --no-ui`;
+  if (hasNativeEngine()) {
+    // cfg 模式：把面板保存的 mc.cfg 同步到原生引擎目录
+    try {
+      if (fs.existsSync(NETEASE_MC_CFG)) fs.copyFileSync(NETEASE_MC_CFG, path.join(NETEASE_NATIVE_DIR, "mc.cfg"));
+    } catch {}
+    return `"${engineExe()}" --config mc.cfg --logger --no-ui`;
   }
-  return `"${exe}" --config mc.cfg --logger --no-ui`;
+  const exe = path.join(NETEASE_CORE_DIR, "Program.exe");
+  if (!fs.existsSync(exe)) {
+    const script = path.join(NETEASE_BOT_DIR, IS_WIN ? "start-bot.bat" : "start-bot.sh");
+    return fs.existsSync(script) ? script : null;
+  }
+  if (IS_WIN) {
+    const bat = path.join(NETEASE_BOT_DIR, "start-bot.bat");
+    if (fs.existsSync(bat)) return bat;
+    return `"${exe}" --config mc.cfg --logger --no-ui`;
+  }
+  // 非 Windows：启动脚本里也是 ./Program.exe，直接套 wine 更可靠
+  const wine = wineBinary();
+  if (wine) {
+    return `WINEDEBUG=-all WINEDLLOVERRIDES=mscoree,mshtml= "${wine}" "${exe}" --config mc.cfg --logger --no-ui`;
+  }
+  const sh = path.join(NETEASE_BOT_DIR, "start-bot.sh");
+  return fs.existsSync(sh) ? sh : null;
 }
 
 /** ===== 网易账号模式：账号登录 → 房间解析 → 引擎 argv =====
@@ -822,6 +876,7 @@ type AccountCfg = {
   roomKind: string;
   localHost: string;
   localPort: string;
+  lobbyVersion: string;
   displayName: string;
   /** 可选：覆盖引擎版本号 / 协议（默认用 VQ PE 的 3.8.x 与引擎内置协议） */
   engineVersion: string;
@@ -844,6 +899,7 @@ function readAccountCfg(): AccountCfg {
     roomKind: ["lobby", "realms", "local"].includes(String(raw.roomKind ?? "")) ? String(raw.roomKind) : "rental",
     localHost: String(raw.localHost ?? ""),
     localPort: String(raw.localPort ?? ""),
+    lobbyVersion: String(raw.lobbyVersion ?? ""),
     displayName: String(raw.displayName ?? ""),
     engineVersion: String(raw.engineVersion ?? ""),
     patchVersion: String(raw.patchVersion ?? ""),
@@ -875,15 +931,100 @@ function loginSnapshot() {
     sms: s?.state.sms ?? null,
     notices: s?.state.notices.slice(-20) ?? [],
     expiresAt: x19Cred?.expiresAt ?? 0,
+    saved: !!readSessionFile(),
     binary: !!resolveX19LoginBinary(),
   };
+}
+
+type SavedSession = { v: number; entityId: string; token: string; name: string; savedAt: number; expiresAt: number };
+
+function saveSessionFile(cred: X19Cred) {
+  const saved: SavedSession = {
+    v: 1,
+    entityId: cred.entityId,
+    token: cred.token,
+    name: cred.name,
+    savedAt: Date.now(),
+    expiresAt: cred.expiresAt,
+  };
+  try {
+    writeFileAtomic(NETEASE_SESSION_FILE, JSON.stringify(saved, null, 2) + "\n");
+    log(`网易登录态已保存：${path.relative(ROOT, NETEASE_SESSION_FILE)}（0600）`);
+  } catch (e: any) {
+    log(`保存登录态失败：${e?.message ?? e}`);
+  }
+}
+
+function readSessionFile(): SavedSession | null {
+  const raw = readJsonFile(NETEASE_SESSION_FILE);
+  if (!raw || typeof raw !== "object") return null;
+  const entityId = String(raw.entityId ?? raw.entity_id ?? "").trim();
+  const token = String(raw.token ?? "").trim();
+  if (!entityId || !token) return null;
+  return {
+    v: 1,
+    entityId,
+    token,
+    name: String(raw.name ?? ""),
+    savedAt: Number(raw.savedAt ?? raw.saved_at ?? 0) || 0,
+    expiresAt: Number(raw.expiresAt ?? raw.expires_at ?? 0) || 0,
+  };
+}
+
+function clearSessionFile() {
+  try {
+    fs.rmSync(NETEASE_SESSION_FILE, { force: true });
+  } catch {}
+}
+
+/** 用保存的 token 换新 token；成功返回 true */
+async function refreshCred(cred: X19Cred): Promise<boolean> {
+  const session = new X19LoginSession(
+    { mode: "refresh", entityId: cred.entityId, token: cred.token },
+    { onLog: (line) => log(line), timeoutMs: 30_000 }
+  );
+  const state = await session.wait(35_000);
+  if (state.status !== "ok" || !state.token) {
+    log(`刷新登录态失败：${state.error || state.status}`);
+    return false;
+  }
+  x19Cred = {
+    entityId: state.entityId || cred.entityId,
+    name: state.name || cred.name,
+    token: state.token,
+    at: Date.now(),
+    expiresAt: Date.now() + X19_TOKEN_TTL,
+  };
+  saveSessionFile(x19Cred);
+  log(`网易登录态已刷新：${x19Cred.name || "（无昵称）"}（uid ${x19Cred.entityId}）`);
+  return true;
+}
+
+/** 操作前确保 token 可用：过期就自动刷新一次 */
+async function ensureCred(): Promise<X19Cred> {
+  if (!x19Cred) throw new Error("请先登录网易账号（或导入登录态）");
+  if (Date.now() <= x19Cred.expiresAt) return x19Cred;
+  const ok = await refreshCred(x19Cred);
+  if (!ok) {
+    throw new Error("登录态刷新失败（网络或 token 失效），可点「刷新登录态」重试或重新登录");
+  }
+  return x19Cred;
+}
+
+function restoreSavedSession() {
+  const saved = readSessionFile();
+  if (!saved) return;
+  x19Cred = { entityId: saved.entityId, name: saved.name, token: saved.token, at: saved.savedAt || Date.now(), expiresAt: 0 };
+  log(`发现已保存的网易登录态（uid ${saved.entityId}），正在刷新…`);
+  refreshCred(x19Cred).then((ok) => {
+    if (!ok) log("保存的登录态暂时刷新失败，可稍后点「刷新登录态」重试，或重新登录");
+  });
 }
 
 function requireCred(): X19Cred {
   if (!x19Cred) throw new Error("请先登录网易账号");
   if (Date.now() > x19Cred.expiresAt) {
-    x19Cred = null;
-    throw new Error("网易登录已过期，请重新登录");
+    throw new Error("网易登录已过期，正在刷新或请重新登录");
   }
   return x19Cred;
 }
@@ -923,6 +1064,7 @@ function startX19Login(input: any) {
       expiresAt: Date.now() + X19_TOKEN_TTL,
     };
     saveAccountCfg({ account });
+    saveSessionFile(x19Cred);
     log(`网易账号已登录：${state.name || "（无昵称）"}（uid ${state.entityId}）`);
   });
   return { ok: true, login: loginSnapshot() };
@@ -949,7 +1091,8 @@ function logoutX19() {
   x19Session?.cancel();
   x19Session = null;
   x19Cred = null;
-  log("已退出网易账号登录态");
+  clearSessionFile();
+  log("已退出网易账号登录态，并清除本地保存");
   return { ok: true };
 }
 
@@ -979,7 +1122,7 @@ async function resolveRoomForPanel(body: any) {
     };
   }
 
-  const cred = requireCred();
+  const cred = await ensureCred();
 
   if (kind === "realms") {
     if (!keyword) throw new Error("请填写山头服 ID 或邀请码");
@@ -997,7 +1140,9 @@ async function resolveRoomForPanel(body: any) {
   }
 
   if (kind === "lobby") {
-    const resolved = await resolveLobbyRoom(keyword, password, { userId: cred.entityId, token: cred.token });
+    const resolved = await resolveLobbyRoom(keyword, password, { userId: cred.entityId, token: cred.token }, {
+      version: String(body?.lobbyVersion ?? cfg.lobbyVersion ?? "") || undefined,
+    });
     return {
       kind,
       entityId: resolved.server.entityId,
@@ -1023,8 +1168,25 @@ async function resolveRoomForPanel(body: any) {
   };
 }
 
+function hasNativeEngine(): boolean {
+  if (IS_WIN) return false;
+  return fs.existsSync(path.join(NETEASE_NATIVE_DIR, "Program"));
+}
+
+/** 引擎目录：优先原生构建，其次 Windows 包 */
+function engineDir(): string {
+  return hasNativeEngine() ? NETEASE_NATIVE_DIR : NETEASE_CORE_DIR;
+}
+
+/** 桥配置跟着引擎目录走（两个引擎各有一份 token） */
+function bridgeCfgPath(): string {
+  return path.join(engineDir(), "scripts", "cubeloom_bridge", "cubeloom_bridge.json");
+}
+
 function engineExe(): string {
-  return path.join(NETEASE_CORE_DIR, "Program.exe");
+  return hasNativeEngine()
+    ? path.join(NETEASE_NATIVE_DIR, "Program")
+    : path.join(NETEASE_CORE_DIR, "Program.exe");
 }
 
 /** 启动网易服务；账号模式返回额外信息（房间/地址） */
@@ -1040,6 +1202,15 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
     return r.ok ? { ok: true, mode: "cfg" } : r;
   }
 
+  const kindHint = String(body?.roomKind ?? cfg.roomKind ?? "rental");
+  if (kindHint !== "local") {
+    try {
+      await ensureCred();
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? String(e) };
+    }
+  }
+
   if (!fs.existsSync(engineExe())) {
     return { ok: false, error: `找不到引擎：${engineExe()}（先运行 npm run setup:netease-bot）` };
   }
@@ -1049,7 +1220,7 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
       error: "Linux/macOS 上运行网易引擎需要 wine（sudo apt install wine / brew install --cask wine-stable），或改用 Windows",
     };
   }
-  const bridgeCfg = readJsonFile(NETEASE_BRIDGE_CFG) || {};
+  const bridgeCfg = readJsonFile(bridgeCfgPath()) || {};
   if (!String(bridgeCfg.token || "").trim()) {
     return { ok: false, error: "缺少事件桥 token：先运行 npm run setup:netease-bot 生成" };
   }
@@ -1078,7 +1249,7 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
         host: room.host,
         port: room.port,
         displayName: cfg.displayName || cred.name || "Cubeloom",
-        pluginDir: path.join(NETEASE_CORE_DIR, "scripts"),
+        pluginDir: path.join(engineDir(), "scripts"),
         engineVersion: cfg.engineVersion || undefined,
         patchVersion: cfg.patchVersion || undefined,
         extraArgs: cfg.protocol ? ["--protocol", cfg.protocol] : undefined,
@@ -1114,7 +1285,7 @@ function spawnNetease(botArgv?: string[]): { ok: boolean; error?: string } {
   if (neteaseChild) return { ok: false, error: "网易版服务已在运行" };
   const entry = neteaseEntry();
   if (!entry) return { ok: false, error: "找不到 netease-service（开发模式需要 tsx，打包版需要 server/netease-service.cjs）" };
-  const bridge = readJsonFile(NETEASE_BRIDGE_CFG) || {};
+  const bridge = readJsonFile(bridgeCfgPath()) || {};
   const token = String(bridge.token || "");
   const botCmd = neteaseBotCommand();
   const env: NodeJS.ProcessEnv = {
@@ -1125,9 +1296,14 @@ function spawnNetease(botArgv?: string[]): { ok: boolean; error?: string } {
     FB_NETEASE_TOKEN: token,
     FB_LOG_DIR: LOG_DIR,
     // Program.exe 必须在本体目录里跑（python312 / scripts 都是相对路径）
-    FB_NETEASE_BOT_CWD: NETEASE_CORE_DIR,
+    FB_NETEASE_BOT_CWD: engineDir(),
   };
-  if (!IS_WIN) env.WINEDEBUG = process.env.WINEDEBUG || "-all";
+  if (!IS_WIN) {
+    env.WINEDEBUG = process.env.WINEDEBUG || "-all";
+    // 避免首次运行弹出 Wine Mono/Gecko 安装框（引擎不需要 .NET/Gecko）
+    env.WINEDLLOVERRIDES = process.env.WINEDLLOVERRIDES || "mscoree,mshtml=";
+    if (process.env.WINEPREFIX) env.WINEPREFIX = process.env.WINEPREFIX;
+  }
   delete env.FB_NETEASE_BOT_CMD;
   delete env.FB_NETEASE_BOT_ARGV;
   if (botArgv?.length) env.FB_NETEASE_BOT_ARGV = JSON.stringify(botArgv);
@@ -1657,6 +1833,7 @@ const server = createServer(async (req, res) => {
     if (p === "/api/netease-service/realms" && req.method === "POST") {
       const body = await readJson(req);
       try {
+        await ensureCred();
         const cred = requireCred();
         const action = String(body?.action ?? "list");
         if (action === "join") {
@@ -1729,6 +1906,66 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, enabled: false, restart: true, note: "重启 Cubeloom 后生效" });
     }
 
+    // ---- 登录态：保存 / 导出 / 导入 / 刷新 ----
+    if (p === "/api/netease-service/session" && req.method === "GET") {
+      const saved = readSessionFile();
+      return sendJson(res, 200, {
+        ok: true,
+        saved: saved ? { entityId: saved.entityId, name: saved.name, savedAt: saved.savedAt } : null,
+        current: loginSnapshot(),
+      });
+    }
+
+    if (p === "/api/netease-service/session/export" && req.method === "GET") {
+      if (!x19Cred) return sendJson(res, 200, { ok: false, error: "当前没有登录态可导出" });
+      return sendJson(res, 200, {
+        ok: true,
+        session: {
+          v: 1,
+          entity_id: x19Cred.entityId,
+          token: x19Cred.token,
+          name: x19Cred.name,
+          saved_at: Date.now(),
+        },
+      });
+    }
+
+    if (p === "/api/netease-service/session/import" && req.method === "POST") {
+      const body = await readJson(req);
+      const raw = body?.session ?? body;
+      const entityId = String(raw?.entity_id ?? raw?.entityId ?? "").trim();
+      const token = String(raw?.token ?? "").trim();
+      if (!/^\d+$/.test(entityId) || token.length < 8) {
+        return sendJson(res, 200, { ok: false, error: "登录态格式不对：需要 entity_id（数字）和 token" });
+      }
+      const prev = x19Cred;
+      const cand: X19Cred = {
+        entityId,
+        token,
+        name: String(raw?.name ?? ""),
+        at: Date.now(),
+        expiresAt: 0,
+      };
+      x19Cred = cand;
+      const ok = await refreshCred(cand);
+      if (!ok) {
+        x19Cred = prev;
+        return sendJson(res, 200, { ok: false, error: "导入的登录态已失效（token 过期或被吊销），请重新登录" });
+      }
+      return sendJson(res, 200, { ok: true, login: loginSnapshot() });
+    }
+
+    if (p === "/api/netease-service/session/clear" && req.method === "POST") {
+      clearSessionFile();
+      return sendJson(res, 200, { ok: true, login: loginSnapshot() });
+    }
+
+    if (p === "/api/netease-service/session/refresh" && req.method === "POST") {
+      if (!x19Cred) return sendJson(res, 200, { ok: false, error: "当前没有登录态" });
+      const ok = await refreshCred(x19Cred);
+      return sendJson(res, 200, ok ? { ok: true, login: loginSnapshot() } : { ok: false, error: "刷新失败，请重新登录" });
+    }
+
     // ---- 网易版：账号登录 / 房间解析（必须在反代之前）----
     if (p === "/api/netease-service/account" && req.method === "GET") {
       return sendJson(res, 200, {
@@ -1736,6 +1973,7 @@ const server = createServer(async (req, res) => {
         config: readAccountCfg(),
         login: loginSnapshot(),
         engine: { installed: fs.existsSync(engineExe()), exe: engineExe() },
+        env: engineEnvSnapshot(),
         canStart: !!neteaseEntry(),
       });
     }
@@ -1749,6 +1987,7 @@ const server = createServer(async (req, res) => {
       if (["rental", "lobby", "realms", "local"].includes(String(body.roomKind))) patch.roomKind = body.roomKind;
       if (typeof body.localHost === "string") patch.localHost = body.localHost.trim();
       if (typeof body.localPort === "string") patch.localPort = body.localPort.trim();
+      if (typeof body.lobbyVersion === "string") patch.lobbyVersion = body.lobbyVersion.trim();
       if (typeof body.displayName === "string") patch.displayName = body.displayName.trim();
       if (typeof body.engineVersion === "string") patch.engineVersion = body.engineVersion.trim();
       if (typeof body.patchVersion === "string") patch.patchVersion = body.patchVersion.trim();
@@ -1783,12 +2022,18 @@ const server = createServer(async (req, res) => {
     if (p === "/api/netease-service/rooms" && req.method === "POST") {
       const body = await readJson(req);
       try {
+        await ensureCred();
         const cred = requireCred();
         const keyword = String(body?.keyword ?? "").trim();
         if (!keyword) return sendJson(res, 200, { ok: false, error: "请填写房间号或房间名" });
         const kind = String(body?.roomKind ?? "") === "lobby" ? "lobby" : "rental";
         if (kind === "lobby") {
-          const list = await searchLobbyRooms(keyword, { userId: cred.entityId, token: cred.token });
+          const cfg = readAccountCfg();
+          const list = await searchLobbyRooms(
+            keyword,
+            { userId: cred.entityId, token: cred.token },
+            { version: String(body?.lobbyVersion ?? cfg.lobbyVersion ?? "") || undefined }
+          );
           return sendJson(res, 200, {
             ok: true,
             rooms: list.map((r) => ({
@@ -1821,7 +2066,7 @@ const server = createServer(async (req, res) => {
     // ---- 网易版：账号/房间配置 + 服务启停（必须在反代之前）----
     if (p === "/api/netease-service/config" && req.method === "GET") {
       const cfg = readJsonFile(NETEASE_MC_CFG);
-      const bridge = readJsonFile(NETEASE_BRIDGE_CFG) || {};
+      const bridge = readJsonFile(bridgeCfgPath()) || {};
       const template = {
         room_info: { ip: "", port: 19132 },
         player_info: { user_id: "", user_name: "", operator_name: "", token: "" },
@@ -1839,8 +2084,8 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 200, {
         ok: true,
         botDir: NETEASE_BOT_DIR,
-        coreDir: NETEASE_CORE_DIR,
-        installed: fs.existsSync(path.join(NETEASE_CORE_DIR, "Program.exe")),
+        coreDir: engineDir(),
+        installed: fs.existsSync(engineExe()),
         hasCfg: !!cfg,
         cfg: cfg || template,
         template: !cfg,
@@ -1872,11 +2117,12 @@ const server = createServer(async (req, res) => {
         pid: neteaseChild?.pid ?? null,
         startedAt: neteaseStartedAt || null,
         botDir: NETEASE_BOT_DIR,
-        installed: fs.existsSync(path.join(NETEASE_CORE_DIR, "Program.exe")),
+        installed: fs.existsSync(engineExe()),
         hasCfg: fs.existsSync(NETEASE_MC_CFG),
         botCmd: neteaseBotCommand(),
         canStart: !!neteaseEntry(),
         login: loginSnapshot(),
+        env: engineEnvSnapshot(),
         engineInstalled: fs.existsSync(engineExe()),
       });
     }
@@ -2179,6 +2425,7 @@ function startServer() {
   auth = startup.mode === "password" ? startup.config : null;
   if (startup.mode === "open") log(startup.message);
   installProcessHooks();
+  restoreSavedSession();
 
   server.listen(ADMIN_PORT, ADMIN_HOST, async () => {
     log(`===== ${APP_NAME} 管理端启动 =====`);

@@ -20,7 +20,8 @@
     "dist:win": "npm run build && npx --yes electron-builder@26 --project build/desktop --win --publish never",
     "dist:mac": "npm run build && npx --yes electron-builder@26 --project build/desktop --mac --publish never",
     "setup:netease-bot": "node tools/setup-netease-bot.mjs",
-    "build:x19login": "node tools/build-x19login.mjs"
+    "build:x19login": "node tools/build-x19login.mjs",
+    "build:engine": "node tools/build-engine-native.mjs"
   },
   "repository": {
     "type": "git",

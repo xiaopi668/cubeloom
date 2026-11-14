@@ -50,3 +50,6 @@ tools/x19login/bin/
 
 # 面板局域网开关（运行时生成）
 network.json
+
+# 原生引擎构建缓存（源码 / Python / 构建目录）
+.cache/

@@ -88,6 +88,8 @@ function startServer() {
     ...process.env,
     ELECTRON_RUN_AS_NODE: "1",
     FB_APP_ROOT: userData,
+    // panel 的 auth.json 不能放在 userData/admin（每次启动会被静态资源覆盖）
+    FB_ADMIN_AUTH_FILE: path.join(userData, "auth.json"),
     FB_WS_ENTRY: path.join(serverDir, "main.cjs"),
     FB_FORCE_ENTRY: "1",
     FB_NO_REPL: "1",
@@ -95,6 +97,8 @@ function startServer() {
     FB_GEOMETRY_BUNDLE: path.join(serverDir, "voxel-geometry.iife.js"),
     FB_NETEASE_ENTRY: path.join(serverDir, "netease-service.cjs"),
     FB_NETEASE_BOT_DIR: path.join(userData, "netease-bot"),
+    FB_X19LOGIN: path.join(serverDir, process.platform === "win32" ? "x19login.exe" : "x19login"),
+    FB_X19_CACHE: path.join(userData, "x19-device.json"),
     FB_ADMIN_PORT: String(ADMIN_PORT),
     FB_WS_PORT: process.env.FB_WS_PORT || "11451",
     FB_CONTROL_PORT: process.env.FB_CONTROL_PORT || "11453",

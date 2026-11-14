@@ -19,8 +19,13 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 
 export type ManagedBotOptions = {
-  /** 完整命令行（用 shell 执行，支持 .cmd/.bat/带参数） */
-  command: string;
+  /** 完整命令行（用 shell 执行，支持 .cmd/.bat/带参数）；与 argv 二选一 */
+  command?: string;
+  /**
+   * 直接以 argv 启动（不经 shell）：[exe, ...args]。
+   * 账号模式用它，避免 DisplayName 之类带空格/引号的值被 cmd 重新解释。
+   */
+  argv?: string[];
   /** 事件桥 socket 路径（用于就绪探测） */
   socketPath: string;
   cwd?: string;
@@ -50,6 +55,12 @@ export class ManagedBot {
   private restartTimer: NodeJS.Timeout | null = null;
 
   constructor(opts: ManagedBotOptions) {
+    if (!opts.argv?.length && !String(opts.command || "").trim()) {
+      throw new Error("ManagedBot 需要 command 或 argv");
+    }
+    if (opts.argv?.length && String(opts.command || "").trim()) {
+      throw new Error("ManagedBot 的 command 与 argv 只能二选一");
+    }
     this.opts = {
       readyTimeoutMs: 30_000,
       restartDelayMs: 5_000,
@@ -65,17 +76,31 @@ export class ManagedBot {
   start(): void {
     if (this.child) return;
     this.stopping = false;
-    this.log(`托管机器人启动：${this.opts.command}`);
+    const argv = this.opts.argv;
+    // 日志里把 --MD5Token 打码：它是可重放的登录凭据，不能进 netease.log
+    const masked = argv
+      ? argv.map((a, i) => (i > 0 && argv[i - 1] === "--MD5Token" ? "***" : a))
+      : undefined;
+    const via = masked ? masked.join(" ") : this.opts.command || "";
+    this.log(`托管机器人启动：${via}`);
     let child: ChildProcess;
     try {
-      child = spawn(this.opts.command, {
-        shell: true,
-        cwd: this.opts.cwd,
-        env: process.env,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        detached: process.platform !== "win32",
-      });
+      child = argv
+        ? spawn(argv[0], argv.slice(1), {
+            cwd: this.opts.cwd,
+            env: process.env,
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+            detached: process.platform !== "win32",
+          })
+        : spawn(String(this.opts.command || ""), {
+            shell: true,
+            cwd: this.opts.cwd,
+            env: process.env,
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+            detached: process.platform !== "win32",
+          });
     } catch (e: any) {
       this.lastError = e?.message ?? String(e);
       this.log(`机器人启动失败：${this.lastError}`);

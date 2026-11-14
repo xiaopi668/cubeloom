@@ -36,3 +36,10 @@ Copyright (C) 2026 Cubeloom contributors
    许可：MIT License（见 vendor/ntvector/LICENSE）
    说明：网易版机器人本体，随仓库以官方 release 原包分发（vendor/ntvector/），
          仅在运行时通过事件桥与 Cubeloom 交互，未修改其代码。
+
+6. NeteaseLogin（网易 x19 登录实现，vendored）
+   来源：https://github.com/DHY0627/NeteaseLogin
+   固定提交：e1058332725db30ae128efd78a8435fa9703d76e
+   许可：MIT License（见 tools/x19login/LICENSE）
+   说明：本仓库的 tools/x19login 以内嵌副本方式使用其 mpay 登录/设备指纹实现，
+         仅增加 NDJSON 协议适配（main.go）。

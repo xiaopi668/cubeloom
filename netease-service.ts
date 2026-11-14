@@ -34,6 +34,19 @@ const HOST = process.env.FB_NETEASE_HOST || "127.0.0.1";
 const SOCKET_PATH = process.env.FB_NETEASE_SOCKET || "";
 /** 托管机器人：设了命令就由本服务启动/重启机器人（机器人本体仍需另行提供） */
 const BOT_CMD = (process.env.FB_NETEASE_BOT_CMD || "").trim();
+/** 账号模式：由 admin-server 算好的完整 argv（JSON 数组），不经 shell */
+const BOT_ARGV: string[] | undefined = (() => {
+  const raw = (process.env.FB_NETEASE_BOT_ARGV || "").trim();
+  if (!raw) return undefined;
+  try {
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr) && arr.length && arr.every((x) => typeof x === "string" && x)) return arr;
+    logError("FB_NETEASE_BOT_ARGV 不是非空字符串数组，忽略");
+  } catch (e: any) {
+    logError(`FB_NETEASE_BOT_ARGV 解析失败：${e?.message ?? e}`);
+  }
+  return undefined;
+})();
 const BOT_CWD = (process.env.FB_NETEASE_BOT_CWD || "").trim() || undefined;
 const TOKEN = process.env.FB_NETEASE_TOKEN || "";
 const LOG_DIR = process.env.FB_LOG_DIR || path.join(process.cwd(), "logs");
@@ -114,9 +127,10 @@ const bridge = new NeteaseBridge({
 });
 
 /** 机器人进程托管（FB_NETEASE_BOT_CMD 未设置时为 null） */
-const managedBot = BOT_CMD
+const managedBot = BOT_ARGV || BOT_CMD
   ? new ManagedBot({
-      command: BOT_CMD,
+      command: BOT_ARGV ? undefined : BOT_CMD,
+      argv: BOT_ARGV,
       socketPath: SOCKET_PATH,
       cwd: BOT_CWD,
       onLog: (line) => log(line),

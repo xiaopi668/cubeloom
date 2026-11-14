@@ -14,6 +14,17 @@ import * as os from "node:os";
 import * as readline from "node:readline";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import {
+  X19LoginSession,
+  resolveX19LoginBinary,
+  type X19LoginRequest,
+} from "./src/netease-account";
+import {
+  buildEngineArgs,
+  redactEngineArgs,
+  resolveRentalRoom,
+  searchRentalServers,
+} from "./src/netease-room";
 
 const APP_NAME = "Cubeloom";
 const IS_WIN = process.platform === "win32";
@@ -56,12 +67,24 @@ const NETEASE_BOT_DIR = (process.env.FB_NETEASE_BOT_DIR || path.join(ROOT, "nete
 const NETEASE_CORE_DIR = path.join(NETEASE_BOT_DIR, "ntvector");
 const NETEASE_MC_CFG = path.join(NETEASE_CORE_DIR, "mc.cfg");
 const NETEASE_BRIDGE_CFG = path.join(NETEASE_CORE_DIR, "scripts", "cubeloom_bridge", "cubeloom_bridge.json");
+/** 账号模式配置（只存账号/房间，不存密码；0600） */
+const NETEASE_ACCOUNT_CFG = path.join(NETEASE_BOT_DIR, "account.json");
 const LOG_DIR = path.join(ROOT, "logs");
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const ADMIN_LOG = path.join(LOG_DIR, "admin.log");
 
 const ADMIN_PORT = Number(process.env.FB_ADMIN_PORT ?? 11452);
-const ADMIN_HOST = process.env.FB_ADMIN_HOST || "127.0.0.1";
+/** 局域网访问开关（面板里可切换；重启后生效）。写 { "host": "0.0.0.0" } 即开放。 */
+const ADMIN_NETWORK_FILE = path.join(ROOT, "network.json");
+function readAdminNetworkHost(): string {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(ADMIN_NETWORK_FILE, "utf8"));
+    return String(cfg?.host ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+const ADMIN_HOST = (process.env.FB_ADMIN_HOST || readAdminNetworkHost() || "127.0.0.1").trim();
 const WS_PORT = Number(process.env.FB_WS_PORT ?? 11451);
 const CONTROL_PORT = Number(process.env.FB_CONTROL_PORT ?? 11453);
 const WS_VERSION = Number(process.env.FB_WS_VERSION ?? 17104896);
@@ -728,6 +751,37 @@ function writeFileAtomic(file: string, text: string) {
   try { fs.chmodSync(file, 0o600); } catch {}
 }
 
+/** Wine：Linux/macOS 上跑 Windows 引擎（Program.exe）的唯一实用方式 */
+let wineCache: string | null | undefined;
+function wineBinary(): string | null {
+  if (IS_WIN) return null;
+  if ((process.env.FB_NETEASE_NO_WINE || "") === "1") return null;
+  if (wineCache !== undefined) return wineCache;
+  const forced = (process.env.FB_WINE || "").trim();
+  const candidates = forced ? [forced] : ["wine", "wine64", "/usr/bin/wine", "/usr/local/bin/wine"];
+  for (const bin of candidates) {
+    try {
+      const r = spawnSync(bin, ["--version"], { stdio: "ignore", timeout: 5000 });
+      if (r.status === 0) {
+        wineCache = bin;
+        return bin;
+      }
+    } catch {
+      /* 继续找 */
+    }
+  }
+  wineCache = null;
+  return null;
+}
+
+/** 把「引擎 argv」包成当前平台能执行的形式：Windows 直接跑，其他平台套 wine */
+function engineArgvWithWine(argv: string[]): string[] | null {
+  if (IS_WIN) return argv;
+  const wine = wineBinary();
+  if (!wine) return null;
+  return [wine, ...argv];
+}
+
 function neteaseBotCommand(): string | null {
   const forced = (process.env.FB_NETEASE_BOT_CMD || "").trim();
   if (forced) return forced;
@@ -736,7 +790,232 @@ function neteaseBotCommand(): string | null {
     : [path.join(NETEASE_BOT_DIR, "start-bot.sh")];
   for (const c of candidates) if (fs.existsSync(c)) return c;
   const exe = path.join(NETEASE_CORE_DIR, "Program.exe");
-  return fs.existsSync(exe) ? `"${exe}" --config mc.cfg --logger --no-ui` : null;
+  if (!fs.existsSync(exe)) return null;
+  if (!IS_WIN) {
+    const wine = wineBinary();
+    if (wine) return `WINEDEBUG=-all "${wine}" "${exe}" --config mc.cfg --logger --no-ui`;
+  }
+  return `"${exe}" --config mc.cfg --logger --no-ui`;
+}
+
+/** ===== 网易账号模式：账号登录 → 房间解析 → 引擎 argv =====
+ *
+ * 与 mc.cfg 模式并存：
+ *   · 账号模式：面板里填网易账号/密码 + 房间号，登录换 token，查房间地址，
+ *     直接以 argv 启动 Program.exe（不经 shell，不怕昵称里的空格/引号）；
+ *   · mc.cfg 模式：老路子，读启动器导出的 mc.cfg。
+ * 账号密码只用于换 token，不落盘；token 只在内存里，进程退出即失效。
+ */
+type AccountCfg = {
+  account: string;
+  room: string;
+  roomPassword: string;
+  displayName: string;
+  /** 可选：覆盖引擎版本号 / 协议（默认用 VQ PE 的 3.8.x 与引擎内置协议） */
+  engineVersion: string;
+  patchVersion: string;
+  protocol: string;
+};
+type X19Cred = { entityId: string; name: string; token: string; at: number; expiresAt: number };
+
+/** token 保守按 6 小时算；过期就让用户重新登录，避免半夜掉线还查不出原因 */
+const X19_TOKEN_TTL = 6 * 3600_000;
+let x19Session: X19LoginSession | null = null;
+let x19Cred: X19Cred | null = null;
+
+function readAccountCfg(): AccountCfg {
+  const raw = readJsonFile(NETEASE_ACCOUNT_CFG) || {};
+  return {
+    account: String(raw.account ?? ""),
+    room: String(raw.room ?? ""),
+    roomPassword: String(raw.roomPassword ?? ""),
+    displayName: String(raw.displayName ?? ""),
+    engineVersion: String(raw.engineVersion ?? ""),
+    patchVersion: String(raw.patchVersion ?? ""),
+    protocol: String(raw.protocol ?? ""),
+  };
+}
+
+function saveAccountCfg(patch: Partial<AccountCfg>): AccountCfg {
+  const next = { ...readAccountCfg(), ...patch };
+  try {
+    writeFileAtomic(NETEASE_ACCOUNT_CFG, JSON.stringify(next, null, 2) + "\n");
+  } catch (e: any) {
+    log(`保存账号配置失败：${e?.message ?? e}`);
+  }
+  return next;
+}
+
+function activeLoginStatus(): string {
+  return x19Session?.state.status ?? "idle";
+}
+
+function loginSnapshot() {
+  const s = x19Session;
+  return {
+    status: s?.state.status ?? "idle",
+    entityId: x19Cred?.entityId ?? s?.state.entityId ?? "",
+    name: x19Cred?.name || s?.state.name || "",
+    error: s?.state.error ?? "",
+    sms: s?.state.sms ?? null,
+    notices: s?.state.notices.slice(-20) ?? [],
+    expiresAt: x19Cred?.expiresAt ?? 0,
+    binary: !!resolveX19LoginBinary(),
+  };
+}
+
+function requireCred(): X19Cred {
+  if (!x19Cred) throw new Error("请先登录网易账号");
+  if (Date.now() > x19Cred.expiresAt) {
+    x19Cred = null;
+    throw new Error("网易登录已过期，请重新登录");
+  }
+  return x19Cred;
+}
+
+function startX19Login(input: any) {
+  const busy = x19Session && ["starting", "need_sms", "need_upstream", "need_password"].includes(x19Session.state.status);
+  if (busy) return { ok: false, error: "已有一次登录正在进行，请先完成或取消" };
+
+  const account = String(input?.account ?? "").trim();
+  const password = String(input?.password ?? "");
+  let mode = String(input?.mode ?? "").trim() as X19LoginRequest["mode"];
+  if (mode !== "email" && mode !== "phone" && mode !== "sms" && mode !== "sauth") {
+    mode = account.includes("@") ? "email" : /^1\d{10}$/.test(account) ? "phone" : "sms";
+  }
+  if (mode !== "sauth" && !account) return { ok: false, error: "请填写网易邮箱或手机号" };
+  if ((mode === "email" || mode === "phone") && !password) return { ok: false, error: "请填写密码" };
+  if (!resolveX19LoginBinary()) {
+    return { ok: false, error: "缺少登录助手 x19login，请先运行 npm run build:x19login" };
+  }
+
+  log(`发起网易登录（${mode}${mode === "sms" ? "" : "，账号已脱敏"}）`);
+  x19Session = new X19LoginSession(
+    { mode, account, password, sauth: String(input?.sauth ?? "") || undefined },
+    { onLog: (line) => log(line) }
+  );
+  x19Session.wait().then((state) => {
+    if (state.status !== "ok") return;
+    x19Cred = {
+      entityId: state.entityId,
+      name: state.name,
+      token: state.token,
+      at: Date.now(),
+      expiresAt: Date.now() + X19_TOKEN_TTL,
+    };
+    saveAccountCfg({ account });
+    log(`网易账号已登录：${state.name || "（无昵称）"}（uid ${state.entityId}）`);
+  });
+  return { ok: true, login: loginSnapshot() };
+}
+
+function submitX19Login(body: any) {
+  if (!x19Session) return { ok: false, error: "没有进行中的登录" };
+  let accepted = false;
+  if (body?.code) accepted = x19Session.submitCode(String(body.code));
+  else if (body?.ack) accepted = x19Session.ackUpstream();
+  else if (body?.password) accepted = x19Session.submitPassword(String(body.password));
+  else return { ok: false, error: "缺少 code / ack / password" };
+  if (!accepted) return { ok: false, error: `当前状态（${x19Session.state.status}）不接受这个输入` };
+  return { ok: true, login: loginSnapshot() };
+}
+
+function cancelX19Login() {
+  x19Session?.cancel();
+  x19Session = null;
+  return { ok: true, login: loginSnapshot() };
+}
+
+function logoutX19() {
+  x19Session?.cancel();
+  x19Session = null;
+  x19Cred = null;
+  log("已退出网易账号登录态");
+  return { ok: true };
+}
+
+/** 房间号/名称 → 地址（面板上的「测试」和启动都用它） */
+async function resolveRoomForPanel(body: any) {
+  const cred = requireCred();
+  const keyword = String(body?.keyword ?? readAccountCfg().room ?? "").trim();
+  if (!keyword) throw new Error("请填写房间号或房间名");
+  const password = String(body?.roomPassword ?? readAccountCfg().roomPassword ?? "");
+  const resolved = await resolveRentalRoom(keyword, password, { userId: cred.entityId, token: cred.token });
+  return {
+    entityId: resolved.server.entityId,
+    name: resolved.server.name,
+    hasPwd: resolved.server.hasPwd,
+    playerCount: resolved.server.playerCount,
+    capacity: resolved.server.capacity,
+    host: resolved.address.host,
+    port: resolved.address.port,
+  };
+}
+
+function engineExe(): string {
+  return path.join(NETEASE_CORE_DIR, "Program.exe");
+}
+
+/** 启动网易服务；账号模式返回额外信息（房间/地址） */
+async function startNetease(body: any): Promise<{ ok: boolean; error?: string; mode?: string; room?: any }> {
+  if (neteaseChild) return { ok: false, error: "网易版服务已在运行" };
+  const requested = String(body?.mode ?? "").trim();
+  const cfg = readAccountCfg();
+  const keyword = String(body?.keyword ?? cfg.room ?? "").trim();
+  const useAccount = requested === "account" || (requested !== "cfg" && !!x19Cred && !!keyword);
+
+  if (!useAccount) {
+    const r = spawnNetease();
+    return r.ok ? { ok: true, mode: "cfg" } : r;
+  }
+
+  if (!fs.existsSync(engineExe())) {
+    return { ok: false, error: `找不到引擎：${engineExe()}（先运行 npm run setup:netease-bot）` };
+  }
+  if (!IS_WIN && !wineBinary()) {
+    return {
+      ok: false,
+      error: "Linux/macOS 上运行网易引擎需要 wine（sudo apt install wine / brew install --cask wine-stable），或改用 Windows",
+    };
+  }
+  const bridgeCfg = readJsonFile(NETEASE_BRIDGE_CFG) || {};
+  if (!String(bridgeCfg.token || "").trim()) {
+    return { ok: false, error: "缺少事件桥 token：先运行 npm run setup:netease-bot 生成" };
+  }
+  let room: any;
+  try {
+    room = await resolveRoomForPanel(body);
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) };
+  }
+  const cred = requireCred();
+  let argv: string[];
+  try {
+    argv = [
+      engineExe(),
+      ...buildEngineArgs({
+        userId: cred.entityId,
+        token: cred.token,
+        entityId: room.entityId,
+        host: room.host,
+        port: room.port,
+        displayName: cfg.displayName || cred.name || "Cubeloom",
+        pluginDir: path.join(NETEASE_CORE_DIR, "scripts"),
+        engineVersion: cfg.engineVersion || undefined,
+        patchVersion: cfg.patchVersion || undefined,
+        extraArgs: cfg.protocol ? ["--protocol", cfg.protocol] : undefined,
+      }),
+    ];
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) };
+  }
+  saveAccountCfg({ room: keyword, roomPassword: String(body?.roomPassword ?? cfg.roomPassword ?? "") });
+  const fullArgv = engineArgvWithWine(argv);
+  if (!fullArgv) return { ok: false, error: "找不到 wine，无法在非 Windows 平台启动引擎" };
+  log(`账号模式启动：房间 ${room.name}（${room.entityId}）→ ${room.host}:${room.port}`);
+  log(`引擎参数：${redactEngineArgs(fullArgv.slice(IS_WIN ? 1 : 2)).join(" ")}`);
+  const r = spawnNetease(fullArgv);
+  return r.ok ? { ok: true, mode: "account", room } : r;
 }
 
 function neteaseEntry(): { cmd: string; args: string[] } | null {
@@ -749,7 +1028,7 @@ function neteaseEntry(): { cmd: string; args: string[] } | null {
   return null;
 }
 
-function spawnNetease(): { ok: boolean; error?: string } {
+function spawnNetease(botArgv?: string[]): { ok: boolean; error?: string } {
   if (neteaseChild) return { ok: false, error: "网易版服务已在运行" };
   const entry = neteaseEntry();
   if (!entry) return { ok: false, error: "找不到 netease-service（开发模式需要 tsx，打包版需要 server/netease-service.cjs）" };
@@ -763,8 +1042,14 @@ function spawnNetease(): { ok: boolean; error?: string } {
     FB_NETEASE_SOCKET: "tcp://127.0.0.1:17999",
     FB_NETEASE_TOKEN: token,
     FB_LOG_DIR: LOG_DIR,
+    // Program.exe 必须在本体目录里跑（python312 / scripts 都是相对路径）
+    FB_NETEASE_BOT_CWD: NETEASE_CORE_DIR,
   };
-  if (botCmd) env.FB_NETEASE_BOT_CMD = botCmd;
+  if (!IS_WIN) env.WINEDEBUG = process.env.WINEDEBUG || "-all";
+  delete env.FB_NETEASE_BOT_CMD;
+  delete env.FB_NETEASE_BOT_ARGV;
+  if (botArgv?.length) env.FB_NETEASE_BOT_ARGV = JSON.stringify(botArgv);
+  else if (botCmd) env.FB_NETEASE_BOT_CMD = botCmd;
   const child = spawn(entry.cmd, entry.args, {
     cwd: ROOT,
     env,
@@ -774,7 +1059,7 @@ function spawnNetease(): { ok: boolean; error?: string } {
   });
   neteaseChild = child;
   neteaseStartedAt = Date.now();
-  log(`启动网易版服务（PID ${child.pid}${botCmd ? "，托管机器人" : ""}）`);
+  log(`启动网易版服务（PID ${child.pid}${botArgv?.length ? "，托管机器人（账号模式）" : botCmd ? "，托管机器人" : ""}）`);
   child.stdout?.on("data", (d: Buffer) => pipeChild(d, false));
   child.stderr?.on("data", (d: Buffer) => pipeChild(d, true));
   child.on("exit", (code) => {
@@ -1286,6 +1571,136 @@ const server = createServer(async (req, res) => {
     }
 
     // ---- 日志文件列表 ----
+    // ---- 局域网 / 手机访问开关（写 network.json，重启后生效）----
+    if (p === "/api/admin/lan" && req.method === "GET") {
+      const enabled = ADMIN_HOST === "0.0.0.0" || ADMIN_HOST === "::";
+      return sendJson(res, 200, {
+        ok: true,
+        enabled,
+        host: ADMIN_HOST,
+        port: ADMIN_PORT,
+        auth: !!auth,
+        ips: SYS.localIps,
+        file: ADMIN_NETWORK_FILE,
+        note: enabled ? "" : "开启后需重启 Cubeloom 才生效",
+      });
+    }
+
+    if (p === "/api/admin/lan" && req.method === "POST") {
+      const ip = String(req.socket.remoteAddress || "");
+      const loopback = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+      if (!loopback) {
+        return sendJson(res, 403, { ok: false, error: "只能在运行 Cubeloom 的那台电脑上开启/关闭局域网访问" });
+      }
+      const body = await readJson(req);
+      const enabled = !!body.enabled;
+      if (enabled) {
+        const password = String(body.password ?? "");
+        if (!auth && (password.length < 6 || password.length > 1024)) {
+          return sendJson(res, 400, { ok: false, error: "开放局域网前必须设置面板口令（6–1024 位）" });
+        }
+        if (password) {
+          if (password.length < 6 || password.length > 1024) {
+            return sendJson(res, 400, { ok: false, error: "口令长度需要 6–1024 位" });
+          }
+          const cfg: AuthConfig = {
+            passwordHash: hashPassword(password),
+            secret: crypto.randomBytes(32).toString("base64"),
+            sessionHours: 12,
+            epoch: authEpoch(auth) + 1,
+          };
+          writeFileAtomic(AUTH_FILE, JSON.stringify(cfg, null, 2) + "\n");
+          auth = cfg;
+          log(`[WARN] 面板口令已更新（epoch=${authEpoch(cfg)}），旧会话全部失效`);
+        }
+        writeFileAtomic(ADMIN_NETWORK_FILE, JSON.stringify({ host: "0.0.0.0" }, null, 2) + "\n");
+        const url = SYS.localIps[0] ? `http://${SYS.localIps[0]}:${ADMIN_PORT}/` : "";
+        log(`[WARN] 已开启局域网访问（重启后绑定 0.0.0.0:${ADMIN_PORT}）`);
+        return sendJson(res, 200, {
+          ok: true,
+          enabled: true,
+          url,
+          restart: true,
+          note: "重启 Cubeloom 后生效；手机 APK 用「连接电脑/服务器」填这个地址",
+        });
+      }
+      writeFileAtomic(ADMIN_NETWORK_FILE, JSON.stringify({ host: "127.0.0.1" }, null, 2) + "\n");
+      log("已关闭局域网访问（重启后只绑定 127.0.0.1）");
+      return sendJson(res, 200, { ok: true, enabled: false, restart: true, note: "重启 Cubeloom 后生效" });
+    }
+
+    // ---- 网易版：账号登录 / 房间解析（必须在反代之前）----
+    if (p === "/api/netease-service/account" && req.method === "GET") {
+      return sendJson(res, 200, {
+        ok: true,
+        config: readAccountCfg(),
+        login: loginSnapshot(),
+        engine: { installed: fs.existsSync(engineExe()), exe: engineExe() },
+        canStart: !!neteaseEntry(),
+      });
+    }
+
+    if (p === "/api/netease-service/account" && req.method === "POST") {
+      const body = await readJson(req);
+      const patch: Partial<AccountCfg> = {};
+      if (typeof body.account === "string") patch.account = body.account.trim();
+      if (typeof body.room === "string") patch.room = body.room.trim();
+      if (typeof body.roomPassword === "string") patch.roomPassword = body.roomPassword;
+      if (typeof body.displayName === "string") patch.displayName = body.displayName.trim();
+      if (typeof body.engineVersion === "string") patch.engineVersion = body.engineVersion.trim();
+      if (typeof body.patchVersion === "string") patch.patchVersion = body.patchVersion.trim();
+      if (typeof body.protocol === "string") patch.protocol = body.protocol.trim();
+      const cfg = saveAccountCfg(patch);
+      log("账号配置已保存（不含密码）");
+      return sendJson(res, 200, { ok: true, config: cfg });
+    }
+
+    if (p === "/api/netease-service/login" && req.method === "POST") {
+      const body = await readJson(req);
+      return sendJson(res, 200, startX19Login(body));
+    }
+
+    if (p === "/api/netease-service/login" && req.method === "GET") {
+      return sendJson(res, 200, { ok: true, login: loginSnapshot() });
+    }
+
+    if (p === "/api/netease-service/login/input" && req.method === "POST") {
+      const body = await readJson(req);
+      return sendJson(res, 200, submitX19Login(body));
+    }
+
+    if (p === "/api/netease-service/login/cancel" && req.method === "POST") {
+      return sendJson(res, 200, cancelX19Login());
+    }
+
+    if (p === "/api/netease-service/logout" && req.method === "POST") {
+      return sendJson(res, 200, logoutX19());
+    }
+
+    if (p === "/api/netease-service/rooms" && req.method === "POST") {
+      const body = await readJson(req);
+      try {
+        const cred = requireCred();
+        const keyword = String(body?.keyword ?? "").trim();
+        if (!keyword) return sendJson(res, 200, { ok: false, error: "请填写房间号或房间名" });
+        const rooms = await searchRentalServers(keyword, { userId: cred.entityId, token: cred.token });
+        return sendJson(res, 200, { ok: true, rooms });
+      } catch (e: any) {
+        return sendJson(res, 200, { ok: false, error: e?.message ?? String(e) });
+      }
+    }
+
+    if (p === "/api/netease-service/room" && req.method === "POST") {
+      const body = await readJson(req);
+      try {
+        return sendJson(res, 200, { ok: true, room: await resolveRoomForPanel(body) });
+      } catch (e: any) {
+        const message = e?.message ?? String(e);
+        log(`房间解析失败：${message}`);
+        return sendJson(res, 200, { ok: false, error: message });
+      }
+    }
+
     // ---- 网易版：账号/房间配置 + 服务启停（必须在反代之前）----
     if (p === "/api/netease-service/config" && req.method === "GET") {
       const cfg = readJsonFile(NETEASE_MC_CFG);
@@ -1344,6 +1759,8 @@ const server = createServer(async (req, res) => {
         hasCfg: fs.existsSync(NETEASE_MC_CFG),
         botCmd: neteaseBotCommand(),
         canStart: !!neteaseEntry(),
+        login: loginSnapshot(),
+        engineInstalled: fs.existsSync(engineExe()),
       });
     }
 
@@ -1352,10 +1769,16 @@ const server = createServer(async (req, res) => {
       const action = String(body.action || "");
       if (action === "start") {
         if (neteaseChild) return sendJson(res, 200, { ok: false, error: "网易版服务已在运行" });
-        const r = spawnNetease();
+        const r = await startNetease(body);
         if (!r.ok) return sendJson(res, 200, { ok: false, error: r.error });
         const up = await waitForNetease();
-        return sendJson(res, 200, up ? { ok: true, running: true } : { ok: false, error: "网易版服务 15 秒内没有就绪，请看日志" });
+        return sendJson(
+          res,
+          200,
+          up
+            ? { ok: true, running: true, mode: r.mode, room: r.room }
+            : { ok: false, error: "网易版服务 15 秒内没有就绪，请看日志", mode: r.mode, room: r.room }
+        );
       }
       if (action === "stop") {
         if (!neteaseChild) return sendJson(res, 200, { ok: false, error: "网易版服务未运行" });
@@ -1366,10 +1789,16 @@ const server = createServer(async (req, res) => {
       if (action === "restart") {
         stopNetease();
         await new Promise((r) => setTimeout(r, 500));
-        const r = spawnNetease();
+        const r = await startNetease(body);
         if (!r.ok) return sendJson(res, 200, { ok: false, error: r.error });
         const up = await waitForNetease();
-        return sendJson(res, 200, up ? { ok: true, running: true } : { ok: false, error: "重启后 15 秒内没有就绪，请看日志" });
+        return sendJson(
+          res,
+          200,
+          up
+            ? { ok: true, running: true, mode: r.mode, room: r.room }
+            : { ok: false, error: "重启后 15 秒内没有就绪，请看日志", mode: r.mode, room: r.room }
+        );
       }
       return sendJson(res, 400, { ok: false, error: `未知 action: ${action}` });
     }

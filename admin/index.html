@@ -276,36 +276,92 @@
         <button class="btn accent small" id="profile-save">保存配置</button>
         <span class="log-info">「使用」会把连接参数复制到剪贴板并标记为当前配置</span>
       </div>
-    </section></div><div class="stack"><section class="panel" id="panel-nte-account">
-      <h2>机器人账号 / 房间</h2>
+    </section><section class="panel" id="panel-lan">
+      <h2>手机 / 局域网访问</h2>
       <div class="log-info" style="margin-bottom:8px; white-space:normal">
-        NTvector 只认启动器导出的 <b>mc.cfg</b>（里面含房间 IP/端口、user_id、token）。
-        普通玩家只看到「房间号」，拿不到 IP —— 用启动器登录一次，导出/复制它的 mc.cfg，
-        点下面「导入 mc.cfg 文件」或直接粘贴 JSON，再点保存即可。
+        APK 的「连接电脑 / 服务器」模式需要面板对局域网开放。开启前必须设口令；
+        开放后能访问该端口的人就可能执行沙箱命令，只在可信网络使用。
       </div>
       <div class="sl-form">
-        <input id="nte-cfg-ip" type="text" placeholder="房间 IP" />
-        <input id="nte-cfg-port" type="number" placeholder="端口（默认 19132）" />
-        <input id="nte-cfg-uid" type="text" placeholder="user_id" />
-        <input id="nte-cfg-uname" type="text" placeholder="玩家名 user_name" />
-        <input id="nte-cfg-opname" type="text" placeholder="operator_name（可空）" />
-        <input id="nte-cfg-token" type="text" placeholder="token（Base64）" />
-        <textarea id="nte-cfg-json" class="full" rows="9" spellcheck="false"
-          style="background:var(--code-bg); color:var(--fg); border:1px solid var(--line-2); border-radius:8px; padding:10px; font-family:var(--mono); font-size:12px; width:100%; resize:vertical"
-          placeholder="完整 mc.cfg JSON"></textarea>
+        <input id="lan-pass" type="password" placeholder="面板口令（至少 6 位）" autocomplete="new-password" />
+        <input id="lan-pass2" type="password" placeholder="再输一次" autocomplete="new-password" />
       </div>
-      <div class="sl-row" style="margin-bottom:8px">
-        <input id="nte-cfg-file" type="file" accept=".cfg,.json,application/json,text/plain" />
-        <span class="log-info">选择启动器导出的 mc.cfg</span>
+      <div class="sl-row" style="margin-top:8px">
+        <button class="btn accent small" id="lan-on">开启局域网访问</button>
+        <button class="btn small" id="lan-off">关闭</button>
       </div>
-      <div class="sl-row">
-        <button class="btn accent small" id="nte-cfg-save">保存配置</button>
-        <button class="btn small" id="nte-svc-start">启动机器人 + 网易服务</button>
+      <div class="log-info" id="lan-state" style="margin-top:8px; white-space:normal">检测中…</div>
+    </section></div><div class="stack"><section class="panel" id="panel-nte-account">
+      <h2>网易账号 / 房间</h2>
+      <div class="log-info" style="margin-bottom:8px; white-space:normal">
+        直接填网易账号和房间号：登录换 token → 查房间地址 → 启动引擎。
+        密码只用于登录、不写盘；账号/房间/房间密码保存在本机
+        <code>netease-bot/account.json</code>（0600）。
+      </div>
+      <div class="sl-form">
+        <input id="nte-acct" type="text" placeholder="网易邮箱 / 手机号" autocomplete="username" />
+        <input id="nte-pass" type="password" placeholder="密码（短信登录可留空）" autocomplete="current-password" />
+      </div>
+      <div class="sl-row" style="margin-top:8px">
+        <button class="btn accent small" id="nte-login">登录</button>
+        <button class="btn small ghost" id="nte-sms-mode">短信验证码登录</button>
+        <button class="btn small ghost" id="nte-logout">退出登录</button>
+      </div>
+      <div id="nte-sms-row" class="sl-row" style="display:none;margin-top:8px">
+        <input id="nte-sms-code" type="text" placeholder="短信验证码" inputmode="numeric" />
+        <button class="btn small" id="nte-sms-submit">提交验证码</button>
+      </div>
+      <div id="nte-upstream-row" class="sl-row" style="display:none;margin-top:8px">
+        <button class="btn small" id="nte-upstream-ack">我发好了，继续</button>
+      </div>
+      <div class="log-info" id="nte-login-state" style="margin-top:8px; white-space:normal">未登录</div>
+
+      <div class="sl-sub" style="margin-top:14px">房间</div>
+      <div class="sl-form">
+        <input id="nte-room" type="text" placeholder="房间号 / 房间名" />
+        <input id="nte-room-pass" type="password" placeholder="房间密码（可空）" />
+        <input id="nte-display" type="text" placeholder="进服昵称（默认用账号昵称）" />
+      </div>
+      <div class="sl-row" style="margin-top:8px">
+        <button class="btn small" id="nte-room-search">搜索房间</button>
+        <button class="btn accent small" id="nte-svc-start">启动机器人 + 网易服务</button>
         <button class="btn small" id="nte-svc-stop">停止</button>
-        <button class="btn small" id="nte-svc-restart">重启</button>
+        <button class="btn small ghost" id="nte-svc-restart">重启</button>
       </div>
+      <div class="log-info" id="nte-room-list" style="margin-top:8px; white-space:normal"></div>
       <div class="log-info" id="nte-svc-state" style="margin-top:8px; white-space:normal">检测中…</div>
-    </section><section class="panel">
+
+      <details style="margin-top:14px">
+        <summary class="log-info" style="cursor:pointer">高级：引擎版本 / 协议 / mc.cfg</summary>
+        <div class="sl-form" style="margin-top:8px">
+          <input id="nte-engine-ver" type="text" placeholder="EngineVersion（默认 3.8.15.292807）" />
+          <input id="nte-patch-ver" type="text" placeholder="PatchVersion（默认 3.8.16.292826）" />
+          <input id="nte-protocol" type="number" placeholder="协议版本（可空，例如 860 / 898）" />
+        </div>
+        <div class="sl-form" style="margin-top:8px">
+          <input id="nte-cfg-ip" type="text" placeholder="房间 IP" />
+          <input id="nte-cfg-port" type="number" placeholder="端口（默认 19132）" />
+          <input id="nte-cfg-uid" type="text" placeholder="user_id" />
+          <input id="nte-cfg-uname" type="text" placeholder="玩家名 user_name" />
+          <input id="nte-cfg-opname" type="text" placeholder="operator_name（可空）" />
+          <input id="nte-cfg-token" type="text" placeholder="token（Base64）" />
+          <textarea id="nte-cfg-json" class="full" rows="9" spellcheck="false"
+            style="background:var(--code-bg); color:var(--fg); border:1px solid var(--line-2); border-radius:8px; padding:10px; font-family:var(--mono); font-size:12px; width:100%; resize:vertical"
+            placeholder="完整 mc.cfg JSON"></textarea>
+        </div>
+        <div class="sl-row" style="margin-bottom:8px">
+          <input id="nte-cfg-file" type="file" accept=".cfg,.json,application/json,text/plain" />
+          <span class="log-info">选择启动器导出的 mc.cfg</span>
+        </div>
+        <div class="sl-row">
+          <button class="btn small" id="nte-cfg-save">保存 mc.cfg</button>
+          <label class="log-info" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="nte-use-cfg" /> 启动时使用 mc.cfg（忽略账号登录）
+          </label>
+        </div>
+      </details>
+    </section>
+<section class="panel">
       <h2>网易版（机器人 · 事件桥）</h2>
       <div class="log-info" id="nte-status" style="margin-bottom:8px; white-space:normal">检测中…</div>
       <div class="player">
@@ -775,21 +831,265 @@
     }
   }
 
-  /* ---- 网易版账号/房间配置 ---- */
+  /* ---- 网易账号登录 / 房间 / 启动 ---- */
+  const NTE_ACTIVE = ["starting", "need_sms", "need_upstream", "need_password"];
+  let nteLoginTimer = null;
+  let nteLoginState = { status: "idle" };
+
+  function nteRenderLogin(login) {
+    nteLoginState = login || { status: "idle" };
+    const st = nteLoginState.status || "idle";
+    const stateEl = $("nte-login-state");
+    const notes = (nteLoginState.notices || []).slice(-3).join(" · ");
+    $("nte-sms-row").style.display = st === "need_sms" ? "flex" : "none";
+    $("nte-upstream-row").style.display = st === "need_upstream" ? "flex" : "none";
+    $("nte-pass").disabled = st === "need_sms";
+
+    if (st === "ok") {
+      const exp = nteLoginState.expiresAt ? new Date(nteLoginState.expiresAt).toLocaleTimeString() : "";
+      stateEl.textContent =
+        `已登录：${nteLoginState.name || "（无昵称）"}（uid ${nteLoginState.entityId || "—"}）` +
+        (exp ? ` · 有效期到 ${exp}` : "") +
+        (notes ? ` · ${notes}` : "");
+    } else if (st === "error") {
+      stateEl.textContent = `登录失败：${nteLoginState.error || "未知错误"}${notes ? ` · ${notes}` : ""}`;
+    } else if (st === "need_sms") {
+      stateEl.textContent = `验证码已发送到 ${nteLoginState.sms?.phone || "手机号"}，填在下面提交${notes ? ` · ${notes}` : ""}`;
+    } else if (st === "need_upstream") {
+      stateEl.textContent = `网易要求上行短信：发送「${nteLoginState.sms?.content || ""}」到 ${nteLoginState.sms?.number || ""}，发完点「我发好了」`;
+    } else if (st === "need_password") {
+      stateEl.textContent = "需要密码，请在密码框填写后重新点「登录」";
+    } else if (st === "starting") {
+      stateEl.textContent = `登录中…（设备注册/风控校验可能需要几秒）${notes ? ` · ${notes}` : ""}`;
+    } else {
+      const hint = nteLoginState.binary === false ? "（缺少登录助手：先运行 npm run build:x19login）" : "";
+      stateEl.textContent = `未登录${hint}`;
+    }
+  }
+
+  function ntePollLogin() {
+    if (nteLoginTimer) return;
+    nteLoginTimer = setInterval(async () => {
+      let r;
+      try {
+        r = await api("/api/netease-service/login");
+      } catch {
+        return;
+      }
+      if (!r || !r.ok) return;
+      nteRenderLogin(r.login);
+      if (!NTE_ACTIVE.includes(r.login.status)) {
+        clearInterval(nteLoginTimer);
+        nteLoginTimer = null;
+        if (r.login.status === "ok") nteSaveAccount({ account: $("nte-acct").value.trim() });
+      }
+    }, 1000);
+  }
+
+  async function nteLoginStart(mode) {
+    const account = $("nte-acct").value.trim();
+    const password = $("nte-pass").value;
+    if (!account) {
+      $("nte-login-state").textContent = "先填网易邮箱或手机号";
+      return;
+    }
+    if (mode !== "sms" && !password) {
+      $("nte-login-state").textContent = "填密码，或点「短信验证码登录」";
+      return;
+    }
+    $("nte-login-state").textContent = "登录中…";
+    const r = await post("/api/netease-service/login", { account, password: mode === "sms" ? "" : password, mode });
+    if (!r || !r.ok) {
+      $("nte-login-state").textContent = (r && r.error) || "登录请求失败";
+      return;
+    }
+    // 密码不在页面里多留：请求发完就清空
+    $("nte-pass").value = "";
+    nteRenderLogin(r.login);
+    ntePollLogin();
+  }
+
+  async function nteSubmitSms() {
+    const code = $("nte-sms-code").value.trim();
+    if (!code) {
+      $("nte-login-state").textContent = "先填短信验证码";
+      return;
+    }
+    const r = await post("/api/netease-service/login/input", { code });
+    if (!r || !r.ok) {
+      $("nte-login-state").textContent = (r && r.error) || "提交失败";
+      return;
+    }
+    $("nte-sms-code").value = "";
+    nteRenderLogin(r.login);
+    ntePollLogin();
+  }
+
+  async function nteAckUpstream() {
+    const r = await post("/api/netease-service/login/input", { ack: "ok" });
+    if (!r || !r.ok) {
+      $("nte-login-state").textContent = (r && r.error) || "确认失败";
+      return;
+    }
+    nteRenderLogin(r.login);
+    ntePollLogin();
+  }
+
+  async function nteLogout() {
+    await post("/api/netease-service/logout", {});
+    nteRenderLogin({ status: "idle" });
+    $("nte-room-list").textContent = "";
+  }
+
+  async function nteSaveAccount(patch) {
+    const body = {
+      account: $("nte-acct").value.trim(),
+      room: $("nte-room").value.trim(),
+      roomPassword: $("nte-room-pass").value,
+      displayName: $("nte-display").value.trim(),
+      engineVersion: $("nte-engine-ver").value.trim(),
+      patchVersion: $("nte-patch-ver").value.trim(),
+      protocol: $("nte-protocol").value.trim(),
+      ...(patch || {}),
+    };
+    if (body.account === undefined) delete body.account;
+    await post("/api/netease-service/account", body);
+  }
+
+  async function nteLoadAccount() {
+    let r;
+    try {
+      r = await api("/api/netease-service/account");
+    } catch (e) {
+      $("nte-svc-state").textContent = "读取账号配置失败：" + (e && e.message ? e.message : e);
+      return;
+    }
+    if (!r || !r.ok) {
+      $("nte-svc-state").textContent = (r && r.error) || "读取账号配置失败";
+      return;
+    }
+    const c = r.config || {};
+    $("nte-acct").value = c.account || "";
+    $("nte-room").value = c.room || "";
+    $("nte-room-pass").value = c.roomPassword || "";
+    $("nte-display").value = c.displayName || "";
+    $("nte-engine-ver").value = c.engineVersion || "";
+    $("nte-patch-ver").value = c.patchVersion || "";
+    $("nte-protocol").value = c.protocol || "";
+    nteRenderLogin(r.login);
+    if (NTE_ACTIVE.includes(r.login.status)) ntePollLogin();
+    const engine = r.engine && r.engine.installed ? "引擎已解压" : "引擎未解压（先运行 npm run setup:netease-bot）";
+    $("nte-svc-state").textContent = `${engine} · ${r.canStart ? "服务可启动" : "缺少 netease-service"}`;
+  }
+
+  async function nteSearchRooms() {
+    const keyword = $("nte-room").value.trim();
+    if (!keyword) {
+      $("nte-room-list").textContent = "先填房间号或房间名";
+      return;
+    }
+    $("nte-room-list").textContent = "搜索中…";
+    const r = await post("/api/netease-service/rooms", { keyword });
+    if (!r || !r.ok) {
+      $("nte-room-list").textContent = "搜索失败：" + ((r && r.error) || "未知错误");
+      return;
+    }
+    if (!r.rooms.length) {
+      $("nte-room-list").textContent = "没有匹配的房间";
+      return;
+    }
+    const box = $("nte-room-list");
+    box.textContent = "";
+    for (const room of r.rooms.slice(0, 12)) {
+      const btn = document.createElement("button");
+      btn.className = "btn small ghost";
+      btn.style.margin = "0 6px 6px 0";
+      btn.textContent = `${room.name}（${room.entityId}）${room.hasPwd ? " 🔒" : ""} · ${room.playerCount}/${room.capacity}`;
+      btn.onclick = () => {
+        $("nte-room").value = room.entityId;
+        nteSaveAccount({ room: room.entityId });
+        $("nte-room-list").textContent = `已选择：${room.name}（${room.entityId}）`;
+      };
+      box.appendChild(btn);
+    }
+  }
+
+  async function nteServiceAction(action, extra) {
+    const body = { action, ...(extra || {}) };
+    if (action === "start" || action === "restart") {
+      body.mode = $("nte-use-cfg").checked ? "cfg" : "account";
+      body.keyword = $("nte-room").value.trim();
+      body.roomPassword = $("nte-room-pass").value;
+    }
+    $("nte-svc-state").textContent = action === "stop" ? "停止中…" : "启动中（解析房间地址 + 拉起引擎）…";
+    const r = await post("/api/netease-service/action", body);
+    if (r && r.ok) {
+      const room = r.room ? ` · 房间 ${r.room.name} → ${r.room.host}:${r.room.port}` : "";
+      $("nte-svc-state").textContent = `操作成功（${r.mode || "cfg"}）${room}，正在等事件桥…`;
+      nteSaveAccount({});
+    } else {
+      $("nte-svc-state").textContent = (r && r.error) || "操作失败";
+    }
+    addEntry("网易版服务 " + action, r);
+    setTimeout(nteLoadConfig, 800);
+    setTimeout(nteRefresh, 1200);
+  }
+
+  /* ---- 手机 / 局域网访问 ---- */
+  async function lanLoad() {
+    let r;
+    try {
+      r = await api("/api/admin/lan");
+    } catch {
+      return;
+    }
+    if (!r || !r.ok) {
+      $("lan-state").textContent = (r && r.error) || "读取失败";
+      return;
+    }
+    const ips = (r.ips || []).join("、") || "—";
+    let text = `${r.enabled ? "已开启" : "未开启"} · 当前绑定 ${r.host}:${r.port} · 本机 IP：${ips}`;
+    if (r.enabled && r.ips && r.ips[0]) text += ` · 手机填 http://${r.ips[0]}:${r.port}/`;
+    if (!r.auth) text += " · 尚未设置口令";
+    text += "（修改后需重启 Cubeloom 生效）";
+    $("lan-state").textContent = text;
+  }
+
+  async function lanSet(enabled) {
+    let password = "";
+    if (enabled) {
+      password = $("lan-pass").value;
+      if (password !== $("lan-pass2").value) {
+        $("lan-state").textContent = "两次口令不一致";
+        return;
+      }
+    }
+    const r = await post("/api/admin/lan", { enabled, password });
+    if (r && r.ok) {
+      $("lan-pass").value = "";
+      $("lan-pass2").value = "";
+      $("lan-state").textContent = `${r.note || "已保存"}${r.url ? ` · 手机填 ${r.url}` : ""}`;
+      addEntry(enabled ? "开启局域网访问" : "关闭局域网访问", r);
+    } else {
+      $("lan-state").textContent = (r && r.error) || "操作失败";
+    }
+  }
+
+  $("lan-on").onclick = () => lanSet(true);
+  $("lan-off").onclick = () => lanSet(false);
+  lanLoad();
+
+  /* ---- 高级：mc.cfg 旧方式 ---- */
   let nteCfg = null;
   async function nteLoadConfig() {
     let r;
     try {
       r = await api("/api/netease-service/config");
     } catch (e) {
-      $("nte-svc-state").textContent = "读取配置失败：" + (e && e.message ? e.message : e);
       return;
     }
+    if (!r || !r.ok) return;
     nteCfg = r;
-    if (!r || !r.ok) {
-      $("nte-svc-state").textContent = (r && r.error) || "读取配置失败";
-      return;
-    }
     const c = r.cfg || {};
     const room = c.room_info || {};
     const p = c.player_info || {};
@@ -800,8 +1100,6 @@
     $("nte-cfg-opname").value = p.operator_name || "";
     $("nte-cfg-token").value = p.token || "";
     $("nte-cfg-json").value = JSON.stringify(c, null, 2);
-    const installed = r.installed ? "机器人已解压" : "机器人未解压（先运行 npm run setup:netease-bot）";
-    $("nte-svc-state").textContent = `${installed} · ${r.hasCfg ? "已有 mc.cfg" : "尚未填写 mc.cfg"}${r.bridgeToken ? " · 桥 token 已生成" : " · 缺少桥 token"}`;
   }
 
   async function nteSaveConfig() {
@@ -828,19 +1126,11 @@
     const r = await post("/api/netease-service/config", { cfg });
     if (r && r.ok) {
       $("nte-cfg-json").value = JSON.stringify(cfg, null, 2);
-      $("nte-svc-state").textContent = "配置已保存：" + (r.file || "mc.cfg");
-      addEntry("网易版保存配置", r);
+      $("nte-svc-state").textContent = "mc.cfg 已保存：" + (r.file || "mc.cfg");
+      addEntry("网易版保存 mc.cfg", r);
     } else {
       $("nte-svc-state").textContent = (r && r.error) || "保存失败";
     }
-  }
-
-  async function nteServiceAction(action) {
-    const r = await post("/api/netease-service/action", { action });
-    $("nte-svc-state").textContent = r && r.ok ? "操作成功，正在刷新状态…" : ((r && r.error) || "操作失败");
-    addEntry("网易版服务 " + action, r);
-    setTimeout(nteLoadConfig, 800);
-    setTimeout(nteRefresh, 1200);
   }
 
   async function nteImportCfgFile(file) {
@@ -858,23 +1148,35 @@
       $("nte-cfg-uname").value = p.user_name || "";
       $("nte-cfg-opname").value = p.operator_name || "";
       $("nte-cfg-token").value = p.token || "";
-      $("nte-svc-state").textContent = `已导入 ${file.name}，确认无误后点「保存配置」`;
+      $("nte-svc-state").textContent = `已导入 ${file.name}，确认无误后点「保存 mc.cfg」`;
     } catch (e) {
       $("nte-svc-state").textContent = "导入失败：" + (e && e.message ? e.message : e);
     }
   }
 
+  $("nte-login").onclick = () => nteLoginStart("");
+  $("nte-sms-mode").onclick = () => nteLoginStart("sms");
+  $("nte-sms-submit").onclick = nteSubmitSms;
+  $("nte-sms-code").onkeydown = (ev) => {
+    if (ev.key === "Enter") nteSubmitSms();
+  };
+  $("nte-upstream-ack").onclick = nteAckUpstream;
+  $("nte-logout").onclick = nteLogout;
+  $("nte-room-search").onclick = nteSearchRooms;
+  $("nte-svc-start").onclick = () => nteServiceAction("start");
+  $("nte-svc-stop").onclick = () => nteServiceAction("stop");
+  $("nte-svc-restart").onclick = () => nteServiceAction("restart");
+  for (const id of ["nte-acct", "nte-room", "nte-room-pass", "nte-display", "nte-engine-ver", "nte-patch-ver", "nte-protocol"]) {
+    $(id).addEventListener("change", () => nteSaveAccount({}));
+  }
   document.getElementById("nte-cfg-file").onchange = (ev) => {
     const input = ev.target;
     const file = input.files && input.files[0];
     nteImportCfgFile(file);
     input.value = "";
   };
-
   document.getElementById("nte-cfg-save").onclick = nteSaveConfig;
-  document.getElementById("nte-svc-start").onclick = () => nteServiceAction("start");
-  document.getElementById("nte-svc-stop").onclick = () => nteServiceAction("stop");
-  document.getElementById("nte-svc-restart").onclick = () => nteServiceAction("restart");
+  nteLoadAccount();
   nteLoadConfig();
 
   document.getElementById("btn-nte-prepare").onclick = ntePrepare;

@@ -37,7 +37,7 @@ function ensureMobileBuild() {
   const src = path.join(ROOT, "build", "mobile", "nodejs-project");
   if (!fs.existsSync(path.join(src, "admin-server.cjs"))) {
     console.log("构建 mobile bundle …");
-    run(process.execPath, [path.join(ROOT, "tools", "build.mjs")]);
+    run(process.execPath, [path.join(ROOT, "tools", "build.mjs")], { env: { ...process.env, FB_SKIP_X19LOGIN: "1" } });
   }
   fs.rmSync(ASSETS, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(ASSETS), { recursive: true });

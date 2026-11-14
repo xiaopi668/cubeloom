@@ -15,11 +15,13 @@ npm run setup:netease-bot
 
 ## 你需要准备的
 
-1. **账号**：NTvector 的 `mc.cfg`（房间号 / 账号 / 皮肤），按
-   [NTvector 官方文档](https://www.vtbot.cn/api-docs/guide/deploy.html) 填；
+1. **账号**：在面板「网易版」里直接填网易邮箱/手机号 + 密码（或短信验证码）和房间号，
+   Cubeloom 会用 `tools/x19login` 换 token、查房间地址，再以 argv 启动引擎；
+   也仍然支持启动器导出的 `mc.cfg`（面板「高级」里）；
 2. **权限**：这个账号必须是目标服的 **OP**，或服务器开启作弊；
-3. **系统**：官方包是 **Windows x64**（Program.exe + 内嵌 Python 3.12）。Linux/macOS/Android
-   需要按 NTvector 源码自行构建 `Program.exe` 的等价产物，或把仓库里的 zip 换成对应平台构建。
+3. **系统**：官方包是 **Windows x64**（Program.exe + 内嵌 Python 3.12）。
+   Linux/macOS 可以直接用 **Wine** 跑（`FB_WINE` 可指定 wine 路径，`FB_NETEASE_NO_WINE=1` 关闭）；
+   Android 不能直接跑 Windows 引擎，请用 APK 的「远程模式」连电脑/服务器。
 
 ## 启动
 
@@ -37,6 +39,16 @@ npm run netease
 `/status` 的 `managedBot` 能看到 pid / 重启次数 / 最后错误。
 
 也可以手动开机器人（`netease-bot/start-bot.bat`），只把 `FB_NETEASE_SOCKET/TOKEN` 给服务。
+
+账号模式的命令由 `admin-server` 拼好后经 `FB_NETEASE_BOT_ARGV`（JSON 数组）传给
+`netease-service`，`ManagedBot` 直接 `spawn(exe, args)`，不经过 shell，所以昵称里有空格/引号也安全：
+
+```bash
+FB_NETEASE_BOT_ARGV='["C:\\...\\Program.exe","--ServerIP","1.2.3.4","--ServerPort","19132","--UserID","…","--MD5Token","…","--NeteaseServerID","…:RentalGame","--AuthServerUrl","https://g79authobt.minecraft.cn","--DisplayName","小皮","--g79","--logger"]' \
+FB_NETEASE_SOCKET="tcp://127.0.0.1:17999" \
+FB_NETEASE_TOKEN="…" \
+npm run netease
+```
 
 ## 桥插件协议
 

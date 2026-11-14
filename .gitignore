@@ -44,3 +44,9 @@ packaging/android/app/src/main/assets/nodejs-project/
 packaging/android/app/src/main/jniLibs/
 packaging/android/app/src/main/cpp/libnode/
 packaging/android/app/.cxx/
+
+# 网易登录助手构建产物（npm run build:x19login）
+tools/x19login/bin/
+
+# 面板局域网开关（运行时生成）
+network.json

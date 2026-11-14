@@ -174,7 +174,7 @@ FB_NO_OPEN=1 npm run admin     # 面板 + WS 一起起；只要 WS 就换成 npm
 网易版客户端用不了 `/connect`，所以走另一条路：**机器人以玩家身份进服**，Cubeloom 把算好的指令经事件桥交给机器人执行。
 
 ```
-结构文件 ──HTTP──> netease-service.ts (11454) ──UNIX socket──> 机器人事件桥 ──RakNet──> 网易租赁服
+结构文件 ──HTTP──> netease-service.ts (11454) ──TCP 17999──> 机器人事件桥 ──RakNet──> 网易租赁服
                           ▲
                    admin-server 反代 /api/netease/*
 ```
@@ -183,46 +183,68 @@ FB_NO_OPEN=1 npm run admin     # 面板 + WS 一起起；只要 WS 就换成 npm
 
 | 项 | 要求 |
 |---|---|
-| 机器人本体 | **仓库自带** NTvector 官方 Windows 包（[vendor/ntvector](vendor/ntvector/)，MIT）+ Cubeloom 桥插件，`npm run setup:netease-bot` 一键解压；仍需自己的账号 `mc.cfg` 与 OP 权限 |
-| 机器人账号 | 必须是目标服的 **OP**，或服务器开启了作弊，否则指令无效 |
-| 运行平台 | Linux / macOS（事件桥走 UNIX socket；Windows 请用 WSL） |
+| 机器人本体 | **仓库自带** NTvector 官方 Windows 包（[vendor/ntvector](vendor/ntvector/)，MIT）+ Cubeloom 桥插件，`npm run setup:netease-bot` 一键解压 |
+| 机器人账号 | 面板里直接填**网易账号 + 密码**（或短信验证码）和**房间号**；账号必须是目标服的 **OP**，或服务器开启作弊 |
+| 运行平台 | 引擎是 Windows x64（Program.exe）：Windows 原生跑；Linux/macOS 装 Wine 也能跑（本机已验证引擎启动 → Python 3.12 → RakNet 初始化，真实进服待实测） |
 | 协议基线 | MCBE 1.21.130 / 协议 898，可用 `FB_NETEASE_PROTOCOL` 覆盖（基线常量见 `src/netease-protocol.ts`） |
 
-### 配置
+### 账号 + 房间（推荐，不用再导 mc.cfg）
+
+```bash
+npm run setup:netease-bot     # 1. 解压引擎、安装桥插件、生成桥 token
+npm run admin                 # 2. 打开面板 →「网易版」页
+```
+
+面板里：
+
+1. 填 **网易邮箱 / 手机号 + 密码** →「登录」（风控要求时按提示填短信验证码 / 发上行短信）；
+2. 填 **房间号**（也可填房间名，点「搜索房间」从候选里选）；
+3. 点 **「启动机器人 + 网易服务」**。
+
+背后的链路是固定的：
+
+```
+账号/密码 ──stdin──> tools/x19login（Go：设备指纹 + mpay 登录，零第三方依赖）
+                             │ entity_id + token
+                             ▼
+admin-server ──X19 动态签名──> g79mclobt.minecraft.cn
+                             │ /rental-server/query/search-by-name
+                             │ /rental-server-world-enter/get
+                             ▼
+              Program.exe --ServerIP … --UserID … --MD5Token …（argv，不经 shell）
+```
+
+- 密码只用于换 token，**不落盘、不进日志**；账号/房间/房间密码存在 `netease-bot/account.json`（0600）。
+- 账号登录只支持**网易官服**（网易邮箱 / 手机号）；4399 等渠道服请用「高级 → mc.cfg」方式。
+- token 只在 `admin-server` 内存里，默认 6 小时过期，过期后重新登录即可。
+- 登录助手是 Go 写的（`tools/x19login`）：`npm run build:x19login` 构建本机版；
+  `npm run build` 会自动产出 host + Windows 两个版本，打包时一起带进 `server/`。
+- 房间地址、MD5Token 的生成逻辑在 `src/netease-room.ts`，有固定向量单测（与 VQ 1.6.2 / NeteaseLogin 逐字节对齐）。
+
+### 手动方式（mc.cfg / 环境变量）
+
+引擎也认启动器导出的 `mc.cfg`，或者手写环境变量：
 
 ```bash
 cp netease/netease.env.example netease/netease.env
 chmod 600 netease/netease.env
-# 填两项：
-#   FB_NETEASE_SOCKET=/opt/netease-bot/bot.sock   # 机器人事件桥的 socket 路径
-#   FB_NETEASE_TOKEN=xxxx                          # 事件桥 token
+#   FB_NETEASE_SOCKET=tcp://127.0.0.1:17999
+#   FB_NETEASE_TOKEN=xxxx
 ```
 
-机器人侧按 `netease/config.json.example`（房间号/密码）和 `netease/mc.cfg.example`（`sauth` 登录凭证）填写，
-这两份是**账号凭据**，权限设 600，别提交到仓库（`.gitignore` 已忽略 `netease/*.env`、`netease/config.json`、`netease/mc.cfg`）。
-
-### 机器人（仓库自带，一键解压）
-
 ```bash
-npm run setup:netease-bot     # 解压 vendor/ntvector 到 netease-bot/，装桥插件、生成 token
 export FB_NETEASE_BOT_CMD="$PWD/netease-bot/start-bot.bat"
 export FB_NETEASE_SOCKET="tcp://127.0.0.1:17999"
 export FB_NETEASE_TOKEN="$(node -p "require('./netease-bot/ntvector/scripts/cubeloom_bridge/cubeloom_bridge.json').token")"
-npm run netease               # 自动拉起机器人、等桥就绪、崩了 5 秒后重启
-```
-
-`netease-service` 会在退出时把机器人一起收掉；`/status` 的 `managedBot` 字段能看到
-pid / 重启次数 / 最后错误。细节与"为什么绕不开账号和 OP"见
-[packaging/netease-bot/README.md](packaging/netease-bot/README.md)。
-
-### 启动
-
-```bash
-set -a; . ./netease/netease.env; set +a   # 载入环境变量（Windows 用 set 或写进 systemd）
 npm run netease
 ```
 
-另外起一个 `npm run admin` 打开面板（11452），「网易版（机器人 · 事件桥）」区会显示：
+`netease-service` 会在退出时把机器人一起收掉；`/status` 的 `managedBot` 字段能看到
+pid / 重启次数 / 最后错误。细节见 [packaging/netease-bot/README.md](packaging/netease-bot/README.md)。
+
+### 面板
+
+`npm run admin` 打开面板（11452），「网易版」页负责登录/房间/启停；「网易版（机器人 · 事件桥）」卡片会显示：
 
 ```
 事件桥已连接 · 机器人 xxx · 服务器 x.x.x.x:xxxx · 协议 898（1.21.130）
@@ -245,6 +267,17 @@ npm run netease
 - 和 WS 版一样只还原方块 ID，不还原方块状态（朝向/半砖/告示牌文字）
 - 网易版服务和 WS 版互不影响，可以同时跑（11454 / 11451 两个端口）
 
+### 账号登录常见问题
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| 提示「缺少登录助手」 | 跑过一次 `npm run build:x19login`；打包版应自带 `server/x19login[.exe]` |
+| 密码登录提示失败/风控 | 改用「短信验证码登录」；按提示填验证码，或按提示发上行短信后点「我发好了」 |
+| 提示「请先登录网易账号」 | token 只在内存里，重启面板/超过 6 小时后需要重新登录 |
+| 房间搜不到 | 房间号要填**完整数字 ID**（或房间名）；账号必须已购买/加入该租赁服 |
+| 引擎起不来 | 确认 `netease-bot/ntvector/Program.exe` 已解压（`npm run setup:netease-bot`），且系统是 Windows x64 |
+| 进服被踢、版本不符 | 用「高级 → 协议版本」覆盖，或换更新版本的 NTvector |
+
 ## 下载与使用（APK / EXE / AppImage）
 
 推送到 `main` 或打 `v*` tag 时，GitHub Actions 会自动编译三端产物：
@@ -263,10 +296,11 @@ Actions 页面里对应 workflow 的 **Artifacts**（tag 构建还会附带 Rele
 
 1. 下载 `Setup` 安装包或 zip，安装/解压后启动 Cubeloom，面板在应用窗口里打开；
 2. 同一台电脑上进游戏：`/connect ws://127.0.0.1:11451`；
-3. 安装包内置 NTvector（43 MB）与网易版服务：面板「网易版 → 机器人账号 / 房间」里
-   填房间 IP/端口、`user_id`、玩家名、`token`（或直接粘贴启动器导出的 `mc.cfg` JSON），
-   点「启动机器人 + 网易服务」即可；
-4. 日志、面板口令、机器人配置在 `%APPDATA%\Cubeloom`（`netease-bot/ntvector/mc.cfg`）。
+3. 安装包内置 NTvector（43 MB）、登录助手 `x19login.exe` 与网易版服务：面板「网易版」页
+   填网易账号 + 密码（或短信）登录，再填房间号，点「启动机器人 + 网易服务」即可；
+   老的 `mc.cfg` 导入收在「高级」里；
+4. 日志、面板口令、机器人配置在 `%APPDATA%\Cubeloom`（`netease-bot/account.json`、
+   `netease-bot/ntvector/mc.cfg`）。
 
 ### Linux（AppImage）
 
@@ -281,11 +315,28 @@ chmod +x Cubeloom-*.AppImage
 
 ### Android（APK）
 
-1. 安装 APK（允许未知来源），打开 Cubeloom；首次启动会把 Node 服务解压到应用私有目录；
-2. 等面板出现后，同一台手机进游戏：`/connect ws://127.0.0.1:11451`；
-3. 面板就是 App 内的 WebView；日志在应用私有目录 `files/cubeloom/nodejs-project/logs`；
-4. APK 内置 Node 18（nodejs-mobile），不需要 Termux；想用自己编译的 Node 可以走
-   [packaging/mobile/README.md](packaging/mobile/README.md) 的 Termux 方案。
+APK 有**两种运行方式**（右下角 ⚙ 随时切换）：
+
+1. **本机模式**：App 内启动 Node 18 服务，面板跑在手机里；同一台手机进游戏
+   `/connect ws://127.0.0.1:11451`。能编辑/预览结构，**但网易进服不行**——
+   NTvector 引擎是 Windows x64（Program.exe + 内嵌 CPython），Android 跑不起来。
+2. **远程模式**：直接填电脑/服务器的面板地址（如 `http://192.168.1.10:11452/`），
+   网易账号登录、房间解析、机器人进服都在那台 Windows 上完成，手机只当遥控器。
+
+远程模式对方要允许局域网访问（面板里点一下就行）：
+
+1. 电脑/服务器打开 Cubeloom 面板 →「网易版」→ **手机 / 局域网访问**；
+2. 设一个面板口令（至少 6 位）→ **开启局域网访问**；
+3. 重启 Cubeloom，面板会显示 `http://192.168.x.x:11452/`；
+4. 手机 APK 右下角 ⚙ → **连接电脑 / 服务器** → 填这个地址。
+
+也可以在启动时用环境变量（等价）：
+
+```bash
+FB_ADMIN_HOST=0.0.0.0 npm run admin   # 必须先有 admin/auth.json 口令，否则 fail-closed 拒绝启动
+```
+
+日志在应用私有目录 `files/cubeloom/nodejs-project/logs`（仅本机模式）。
 
 ### 从源码构建
 
@@ -307,7 +358,7 @@ npm run build:android  # APK；需要 Android SDK + NDK 27 + Gradle 8.13
 - 反向代理/隧道（cloudflared、nginx、frp）转发进来的连接即使远端显示为 `127.0.0.1`，只要带 `X-Forwarded-For` / `X-Real-IP` / `CF-Connecting-IP` 就按外部连接处理，必须 `--login`
 - 要让所有来源都免验证（不推荐）：`FB_ALLOW_ANON=1`
 
-自测：`npm run check:sandbox`（39 项断言）+ `npm test`（74 条：沙箱逃逸/修补器/坐标契约/格式解析/鉴权/发送队列/网易桥/托管机器人）。
+自测：`npm run check:sandbox`（39 项断言）+ `npm test`（87 条：沙箱逃逸/修补器/坐标契约/格式解析/鉴权/发送队列/网易桥/托管机器人/网易登录签名与房间解析）。
 
 
 ## 目录
@@ -317,10 +368,11 @@ main.ts              WS 服务
 admin-server.ts      本地管理面板
 cli.mjs              终端交互版
 netease-service.ts   网易版事件桥
-src/                 结构解析 / NBT / 格式 / 沙箱 / 会话 / 发送队列 / 网易桥
+src/                 结构解析 / NBT / 格式 / 沙箱 / 会话 / 发送队列 / 网易桥 / 网易登录与房间解析
 admin/               面板前端（原生 HTML/CSS/JS，无构建）
 packaging/           desktop（Electron）/ android（APK）/ mobile / portable / netease-bot
 vendor/ntvector/     随仓库分发的网易机器人（MIT，含校验值）
+tools/x19login/      网易账号登录助手（Go，含 NeteaseLogin 的 MIT 副本）
 test/                回归测试（node --test，74 条）
 tools/               构建、打包、自测脚本
 deploy/              systemd 单元模板
@@ -331,7 +383,7 @@ tsconfig.json        类型检查配置（npm run typecheck）
 
 - `@pureeval/voxel-geometry` 锁在 `1.2.10`：该版本 npm 元数据里没有 `license` 字段，许可依据只能看源码仓库的 LICENSE
 - 落块层每块发一条 `setblock`，十万级结构会产生同等数量的命令；要提速可以合并成 `fill`，但那会改变与服务器交互的节奏，暂未做
-- 网易版需要自备机器人本体（参考 NTvector），本仓库不含
+- 网易登录助手内的 mpay 实现来自 [NeteaseLogin](https://github.com/DHY0627/NeteaseLogin)（MIT），已随仓库 vendor
 - 管理面板为单实例本地工具，没有账户体系；若要多人使用请自行加反代与访问控制
 
 ## 贡献

@@ -55,3 +55,30 @@ test("没有 socket 路径时 waitReady 直接通过", async () => {
   assert.equal(await bot.waitReady(100), true);
   bot.stop();
 });
+
+test("argv 模式：不经 shell，带空格/引号的参数原样传给进程", { skip: isWin }, async () => {
+  const sock = tmp("argv");
+  const out = path.join(os.tmpdir(), `cubeloom-bot-${process.pid}-argv.txt`);
+  const display = `机主 名字 "Q"`;
+  const script = `const fs=require('fs'),net=require('net');fs.writeFileSync(${JSON.stringify(out)},process.argv[1]||'');const p=${JSON.stringify(sock)};try{fs.unlinkSync(p)}catch{};net.createServer(s=>s.end()).listen(p);setInterval(()=>{},1000)`;
+  const bot = new ManagedBot({
+    argv: [process.execPath, "-e", script, display],
+    socketPath: sock,
+    onLog: () => {},
+  });
+  bot.start();
+  const ready = await bot.waitReady(5000);
+  assert.equal(ready, true);
+  assert.equal(fs.readFileSync(out, "utf8"), display);
+  bot.stop();
+  try { fs.unlinkSync(sock); } catch {}
+  try { fs.unlinkSync(out); } catch {}
+});
+
+test("argv / command 二选一，缺一个都不能构造", () => {
+  assert.throws(() => new ManagedBot({ socketPath: "" } as any), /需要 command 或 argv/);
+  assert.throws(
+    () => new ManagedBot({ command: "true", argv: ["true"], socketPath: "" } as any),
+    /只能二选一/
+  );
+});

@@ -31,10 +31,17 @@ jobs:
           cache: npm
       - name: 安装依赖
         run: npm ci --no-audit --no-fund
+      - name: 准备 Go（构建网易登录助手）
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
       - name: 解压网易机器人（内置到安装包）
         run: npm run setup:netease-bot
       - name: 预编译 server / desktop / mobile bundle
         run: npm run build
+      - name: 校验登录助手已进包
+        run: node -e "const fs=require('fs');const hit=['x19login','x19login.exe'].filter(f=>fs.existsSync('build/server/'+f));if(!hit.length)throw new Error('build/server 里没有 x19login');console.log('x19login:',hit.join(', '))"
       - name: 打包（未签名）
         run: npx --yes electron-builder@26 --project build/desktop ${{ matrix.target }} --publish never
       - name: 上传产物

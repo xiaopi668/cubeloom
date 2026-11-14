@@ -16,6 +16,7 @@ import { buildSync } from "esbuild";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildX19Login } from "./build-x19login.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BUILD = path.join(ROOT, "build");
@@ -80,6 +81,17 @@ const geo = buildSync({
 });
 fs.writeFileSync(path.join(SERVER, "voxel-geometry.iife.js"), geo.outputFiles[0].text);
 console.log(`  build/server/voxel-geometry.iife.js  ${(geo.outputFiles[0].text.length / 1024).toFixed(0)} KB`);
+
+// 网易登录助手：host 平台 + Windows（引擎是 Windows 的，Linux/macOS 桌面用户也能登录）
+if (process.env.FB_SKIP_X19LOGIN === "1") {
+  console.log("== 跳过网易登录助手（FB_SKIP_X19LOGIN=1）==");
+} else {
+  console.log("== 构建网易登录助手（Go） ==");
+  buildX19Login({
+    outDir: SERVER,
+    targets: process.platform === "win32" ? ["host"] : ["host", "win"],
+  });
+}
 
 // 面板静态资源
 copyDir(path.join(ROOT, "admin"), path.join(SERVER, "admin"));

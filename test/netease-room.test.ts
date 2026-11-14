@@ -12,7 +12,13 @@ import {
   md5TokenBase64,
   pickRentalServer,
   redactEngineArgs,
+  joinRealmsByCode,
+  listRealms,
+  parseLocalEndpoint,
+  resolveLobbyRoom,
+  resolveRealmsAddress,
   resolveRentalAddress,
+  searchLobbyRooms,
   searchRentalServers,
   x19Post,
 } from "../src/netease-room";
@@ -144,4 +150,89 @@ test("引擎参数：缺房间地址 / user_id 直接报错", () => {
     () => buildEngineArgs({ userId: "", token: "t", entityId: "2", host: "h", port: "1", displayName: "x" }),
     /缺少 user_id/
   );
+});
+
+test("联机大厅：搜索字段与签名，进房→取地址→退房的顺序", async () => {
+  const calls: Array<{ url: string; body: string; token: string }> = [];
+  const fakeFetch = (async (url: string, init: any) => {
+    calls.push({ url, body: init.body, token: init.headers["user-token"] });
+    if (url.endsWith("/online-lobby-room/query/search-by-name")) {
+      return new Response(
+        JSON.stringify({
+          code: 0,
+          entities: [
+            { entity_id: "888", room_name: "生存大厅", password: 1, member_uids: ["a", "b"], max_count: 10, version: "1.21.120", lobby_manifest_version: "mv1" },
+          ],
+        }),
+        { status: 200 }
+      );
+    }
+    if (url.endsWith("/online-lobby-room-enter")) return new Response(JSON.stringify({ code: 0 }), { status: 200 });
+    if (url.endsWith("/online-lobby-game-enter")) {
+      return new Response(JSON.stringify({ code: 0, entity: { server_host: "10.0.0.9", server_port: 19132 } }), { status: 200 });
+    }
+    if (url.endsWith("/leave-room")) return new Response(JSON.stringify({ code: 0 }), { status: 200 });
+    return new Response("{}", { status: 404 });
+  }) as unknown as typeof fetch;
+
+  const list = await searchLobbyRooms("生存", CRED, { fetchImpl: fakeFetch });
+  assert.deepEqual(list, [
+    { entityId: "888", name: "生存大厅", hasPwd: true, playerCount: 2, maxCount: 10, version: "1.21.120", lobbyManifestVersion: "mv1" },
+  ]);
+  const searchCall = calls[0];
+  assert.equal(searchCall.url, "https://g79mclobt.minecraft.cn/online-lobby-room/query/search-by-name");
+  assert.equal(searchCall.body, '{"room_name":"生存","res_id":"","version":"1.21.120","offset":0,"length":50}');
+  assert.equal(searchCall.token, dynamicToken("/online-lobby-room/query/search-by-name", searchCall.body, CRED.token));
+
+  const resolved = await resolveLobbyRoom("888", "pw", CRED, { fetchImpl: fakeFetch });
+  assert.equal(resolved.address.host, "10.0.0.9");
+  assert.equal(resolved.address.port, "19132");
+  assert.ok(calls.some((c) => c.url.includes("g79apigatewayobt.minecraft.cn/online-lobby-room-enter")));
+  const enter = calls.find((c) => c.url.endsWith("/online-lobby-room-enter"))!;
+  assert.deepEqual(JSON.parse(enter.body), {
+    room_id: "888",
+    password: "pw",
+    lobby_manifest_version: "mv1",
+    check_visibilily: true,
+  });
+  const game = calls.find((c) => c.url.endsWith("/online-lobby-game-enter"))!;
+  assert.equal(game.body, "");
+  assert.equal(game.token, dynamicToken("/online-lobby-game-enter", "", CRED.token));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(calls.some((c) => c.url.endsWith("/leave-room")), "拿到地址后应释放房间席位");
+});
+
+test("本地联机：IP:端口 解析与端口校验", () => {
+  assert.deepEqual(parseLocalEndpoint({ host: "192.168.1.5", port: "19132" }), { host: "192.168.1.5", port: "19132" });
+  assert.deepEqual(parseLocalEndpoint({ keyword: "192.168.1.5:19132" }), { host: "192.168.1.5", port: "19132" });
+  assert.deepEqual(parseLocalEndpoint({ keyword: "192.168.1.5" }), { host: "192.168.1.5", port: "19132" });
+  assert.deepEqual(parseLocalEndpoint({ keyword: "[::1]:19133" }), { host: "::1", port: "19133" });
+  assert.throws(() => parseLocalEndpoint({ host: "", keyword: "" }), /请填写本地联机的主机地址/);
+  assert.throws(() => parseLocalEndpoint({ host: "1.2.3.4", port: "70000" }), /端口/);
+});
+
+test("山头服：列表 / 邀请码 / sid 地址", async () => {
+  const calls: Array<{ url: string; body: string }> = [];
+  const fakeFetch = (async (url: string, init: any) => {
+    calls.push({ url, body: init.body });
+    if (url.endsWith("/domain-server/get-other-servers")) {
+      return new Response(JSON.stringify({ code: 0, entities: [{ sid: "sid1", name: "山头", user_id: "u", user_name: "服主", status: 1 }] }), { status: 200 });
+    }
+    if (url.endsWith("/domain-server/join-server-with-invite-code")) return new Response(JSON.stringify({ code: 0 }), { status: 200 });
+    if (url.endsWith("/domain-server/req-enter-domain-server")) {
+      return new Response(JSON.stringify({ code: 0, entity: { server_host: "1.2.3.4", server_port: 19132 } }), { status: 200 });
+    }
+    return new Response("{}", { status: 404 });
+  }) as unknown as typeof fetch;
+
+  const list = await listRealms(CRED, { fetchImpl: fakeFetch });
+  assert.deepEqual(list, [{ sid: "sid1", name: "山头", userId: "u", userName: "服主", status: 1 }]);
+  assert.equal(calls[0].url, "https://g79mclobt.minecraft.cn/domain-server/get-other-servers");
+  assert.equal(calls[0].body, "{}");
+
+  await joinRealmsByCode("abc", CRED, { fetchImpl: fakeFetch });
+  assert.equal(calls[1].body, '{"code":"abc"}');
+  const addr = await resolveRealmsAddress("sid1", CRED, { fetchImpl: fakeFetch });
+  assert.deepEqual(addr, { host: "1.2.3.4", port: "19132" });
+  assert.equal(calls[2].body, '{"sid":"sid1"}');
 });

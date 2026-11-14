@@ -413,14 +413,16 @@ func (c *MPayClient) RequestSms(ctx context.Context, phone string) (*SmsChalleng
 	v.Set("mobile", phone)
 
 	b, err := c.postForm(ctx, "/mpay/api/users/login/mobile/get_sms", v)
-	challenge := &SmsChallenge{Phone: phone}
 	if err != nil {
 		var mpayErr *MPayError
 		if errors.As(err, &mpayErr) && mpayErr.IsUpstreamSMS() && mpayErr.ReplySMS != nil {
-			challenge.Upstream = true
-			challenge.Content = mpayErr.ReplySMS.Content
-			challenge.Number = mpayErr.ReplySMS.Number
-			challenge.Hint = mpayErr.Reason
+			challenge := &SmsChallenge{
+				Phone:    phone,
+				Upstream: true,
+				Content:  mpayErr.ReplySMS.Content,
+				Number:   mpayErr.ReplySMS.Number,
+				Hint:     mpayErr.Reason,
+			}
 			if c.OnNotice != nil {
 				c.OnNotice(fmt.Sprintf("网易要求先上行短信: 发送 %q 到 %s", challenge.Content, challenge.Number))
 			}
@@ -429,11 +431,60 @@ func (c *MPayClient) RequestSms(ctx context.Context, phone string) (*SmsChalleng
 		return nil, err
 	}
 
-	var resp struct {
-		GuideText string `json:"guide_text"`
+	// 网易有时用 HTTP 200 + body 里的 code 表示风控/验证要求（例如 1351 需要人机验证），
+	// 必须当成错误抛给调用方，否则会误报「验证码已发送」。
+	challenge, perr := parseSmsChallenge(200, b)
+	if perr != nil {
+		var mpayErr *MPayError
+		if errors.As(perr, &mpayErr) && mpayErr.IsUpstreamSMS() && mpayErr.ReplySMS != nil {
+			challenge = &SmsChallenge{
+				Phone:    phone,
+				Upstream: true,
+				Content:  mpayErr.ReplySMS.Content,
+				Number:   mpayErr.ReplySMS.Number,
+				Hint:     mpayErr.Reason,
+			}
+			if c.OnNotice != nil {
+				c.OnNotice(fmt.Sprintf("网易要求先上行短信: 发送 %q 到 %s", challenge.Content, challenge.Number))
+			}
+			return challenge, nil
+		}
+		return nil, perr
 	}
-	if err := json.Unmarshal(b, &resp); err == nil {
-		challenge.Hint = resp.GuideText
+	challenge.Phone = phone
+	return challenge, nil
+}
+
+// smsResponse 是 get_sms / verify_sms 的响应形状。
+type smsResponse struct {
+	Code      int       `json:"code"`
+	Reason    string    `json:"reason"`
+	Message   string    `json:"message"`
+	VerifyURL string    `json:"verify_url"`
+	GuideText string    `json:"guide_text"`
+	ReplySMS  *ReplySMS `json:"reply_sms"`
+}
+
+// parseSmsChallenge 解析 get_sms 的 200 响应；code != 0 时返回 MPayError（含 verify_url / reply_sms）。
+func parseSmsChallenge(status int, body []byte) (*SmsChallenge, error) {
+	var r smsResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, &MPayError{StatusCode: status, Raw: truncate(string(body), 512)}
+	}
+	challenge := &SmsChallenge{Hint: r.GuideText}
+	if r.Code != 0 {
+		reason := r.Reason
+		if reason == "" {
+			reason = r.Message
+		}
+		return nil, &MPayError{
+			StatusCode: status,
+			Code:       r.Code,
+			Reason:     reason,
+			VerifyURL:  r.VerifyURL,
+			ReplySMS:   r.ReplySMS,
+			Raw:        truncate(string(body), 512),
+		}
 	}
 	return challenge, nil
 }
@@ -487,11 +538,28 @@ func (c *MPayClient) ticketFrom(b []byte, err error) (string, error) {
 	var resp struct {
 		Ticket    string `json:"ticket"`
 		GuideText string `json:"guide_text"`
+		Code      int    `json:"code"`
+		Reason    string `json:"reason"`
+		Message   string `json:"message"`
+		VerifyURL string `json:"verify_url"`
 	}
 	if err := json.Unmarshal(b, &resp); err != nil {
 		return "", fmt.Errorf("解析 mpay ticket 响应失败: %w (body=%s)", err, truncate(string(b), 256))
 	}
 	if resp.Ticket == "" {
+		if resp.Code != 0 {
+			reason := resp.Reason
+			if reason == "" {
+				reason = resp.Message
+			}
+			return "", &MPayError{
+				StatusCode: 200,
+				Code:       resp.Code,
+				Reason:     reason,
+				VerifyURL:  resp.VerifyURL,
+				Raw:        truncate(string(b), 512),
+			}
+		}
 		hint := resp.GuideText
 		if hint == "" {
 			hint = truncate(string(b), 256)

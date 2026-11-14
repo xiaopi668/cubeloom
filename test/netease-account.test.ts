@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { X19LoginSession, resolveX19LoginBinary } from "../src/netease-account";
+import { X19LoginSession, isMainlandPhone, normalizeLoginAccount, resolveX19LoginBinary } from "../src/netease-account";
 
 const isWin = process.platform === "win32";
 
@@ -88,4 +88,23 @@ test("取消登录会杀掉助手进程", { skip: isWin }, async () => {
   const state = await session.wait(1000);
   assert.equal(state.status, "cancelled");
   delete process.env.FB_X19LOGIN;
+});
+
+test("手机号归一化：去 +86 / 空格 / 横线，只认 11 位大陆号码", () => {
+  const cases: Array<[string, string]> = [
+    ["13800000000", "13800000000"],
+    [" 138 0000 0000 ", "13800000000"],
+    ["+86 138-0000-0000", "13800000000"],
+    ["0086 13800000000", "13800000000"],
+    ["86 13800000000", "13800000000"],
+    ["013800000000", "13800000000"],
+    ["demo@163.com", "demo@163.com"],
+    ["  demo@163.com  ", "demo@163.com"],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(normalizeLoginAccount(input), expected, input);
+  }
+  assert.equal(isMainlandPhone("13800000000"), true);
+  assert.equal(isMainlandPhone("1380000000"), false);
+  assert.equal(isMainlandPhone("+8613800000000"), false);
 });

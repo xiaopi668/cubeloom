@@ -255,28 +255,8 @@
       </section>
 
       <section class="page " data-page="netease" id="page-netease">
-        <div class="page-head"><div><h1>网易版</h1><div class="desc">机器人事件桥与多套进服配置</div></div></div>
-        <div class="page-grid"><div class="stack"><section class="panel" id="panel-profiles">
-      <h2>进服配置 · 多套房间</h2>
-      <div class="profile-list" id="profile-list"></div>
-      <div class="sl-sub">新建 / 编辑配置</div>
-      <div class="sl-form">
-        <input id="pf-name" type="text" placeholder="配置名称（如：我的租赁服）" />
-        <select id="pf-mode">
-          <option value="租赁服">租赁服</option>
-          <option value="联机大厅">联机大厅</option>
-          <option value="山头服">山头服</option>
-          <option value="本地联机">本地联机</option>
-        </select>
-        <input id="pf-room" type="text" placeholder="房间号 / 服务器号" />
-        <input id="pf-pass" type="password" placeholder="房间密码（可空）" />
-        <input id="pf-note" class="full" type="text" placeholder="备注（可空）" />
-      </div>
-      <div class="sl-row">
-        <button class="btn accent small" id="profile-save">保存配置</button>
-        <span class="log-info">「使用」会把连接参数复制到剪贴板并标记为当前配置</span>
-      </div>
-    </section><section class="panel" id="panel-lan">
+        <div class="page-head"><div><h1>网易版</h1><div class="desc">账号登录 · 租赁服 / 联机大厅 / 山头服 / 本地联机</div></div></div>
+        <div class="page-grid"><div class="stack"><section class="panel" id="panel-lan">
       <h2>手机 / 局域网访问</h2>
       <div class="log-info" style="margin-bottom:8px; white-space:normal">
         APK 的「连接电脑 / 服务器」模式需要面板对局域网开放。开启前必须设口令；
@@ -299,7 +279,7 @@
         <code>netease-bot/account.json</code>（0600）。
       </div>
       <div class="sl-form">
-        <input id="nte-acct" type="text" placeholder="网易邮箱 / 手机号" autocomplete="username" />
+        <input id="nte-acct" type="text" placeholder="网易邮箱 / 手机号（11 位，不带 +86）" autocomplete="username" />
         <input id="nte-pass" type="password" placeholder="密码（短信登录可留空）" autocomplete="current-password" />
       </div>
       <div class="sl-row" style="margin-top:8px">
@@ -318,17 +298,51 @@
 
       <div class="sl-sub" style="margin-top:14px">房间</div>
       <div class="sl-form">
-        <input id="nte-room" type="text" placeholder="房间号 / 房间名" />
-        <input id="nte-room-pass" type="password" placeholder="房间密码（可空）" />
+        <select id="nte-room-kind">
+          <option value="rental">租赁服（RentalGame）</option>
+          <option value="lobby">联机大厅（LobbyGame）</option>
+          <option value="realms">山头服（DomainGame）</option>
+          <option value="local">本地联机（直连 IP）</option>
+        </select>
         <input id="nte-display" type="text" placeholder="进服昵称（默认用账号昵称）" />
       </div>
+
+      <div id="nte-room-group">
+        <div class="sl-form" style="margin-top:8px">
+          <input id="nte-room" type="text" placeholder="房间号 / 房间名" />
+          <input id="nte-room-pass" type="password" placeholder="房间密码（可空）" />
+        </div>
+        <div class="sl-row" style="margin-top:8px">
+          <button class="btn small" id="nte-room-search">搜索房间</button>
+        </div>
+        <div class="log-info" id="nte-room-list" style="margin-top:8px; white-space:normal"></div>
+      </div>
+
+      <div id="nte-realms-group" style="display:none">
+        <div class="sl-form" style="margin-top:8px">
+          <input id="nte-realms-sid" type="text" placeholder="山头服 ID（从列表选择，或直接填）" />
+          <input id="nte-realms-code" type="text" placeholder="邀请码（可选）" />
+        </div>
+        <div class="sl-row" style="margin-top:8px">
+          <button class="btn small" id="nte-realms-refresh">刷新山头服列表</button>
+          <button class="btn small" id="nte-realms-join">用邀请码加入</button>
+        </div>
+        <div class="log-info" id="nte-realms-list" style="margin-top:8px; white-space:normal"></div>
+      </div>
+
+      <div id="nte-local-group" style="display:none">
+        <div class="sl-form" style="margin-top:8px">
+          <input id="nte-local-host" type="text" placeholder="主机 IP（如 192.168.1.5）" />
+          <input id="nte-local-port" type="number" placeholder="端口（默认 19132）" />
+        </div>
+        <div class="log-info" style="margin-top:8px">本地联机不需要网易账号，引擎会用本地会话直连。</div>
+      </div>
+
       <div class="sl-row" style="margin-top:8px">
-        <button class="btn small" id="nte-room-search">搜索房间</button>
         <button class="btn accent small" id="nte-svc-start">启动机器人 + 网易服务</button>
         <button class="btn small" id="nte-svc-stop">停止</button>
         <button class="btn small ghost" id="nte-svc-restart">重启</button>
       </div>
-      <div class="log-info" id="nte-room-list" style="margin-top:8px; white-space:normal"></div>
       <div class="log-info" id="nte-svc-state" style="margin-top:8px; white-space:normal">检测中…</div>
 
       <details style="margin-top:14px">
@@ -854,9 +868,14 @@
     } else if (st === "error") {
       stateEl.textContent = `登录失败：${nteLoginState.error || "未知错误"}${notes ? ` · ${notes}` : ""}`;
     } else if (st === "need_sms") {
-      stateEl.textContent = `验证码已发送到 ${nteLoginState.sms?.phone || "手机号"}，填在下面提交${notes ? ` · ${notes}` : ""}`;
+      stateEl.textContent =
+        `验证码已发送到 ${nteLoginState.sms?.phone || "手机号"}` +
+        (nteLoginState.sms?.hint ? `（网易提示：${nteLoginState.sms.hint}）` : "") +
+        `，填在下面提交${notes ? ` · ${notes}` : ""}`;
     } else if (st === "need_upstream") {
-      stateEl.textContent = `网易要求上行短信：发送「${nteLoginState.sms?.content || ""}」到 ${nteLoginState.sms?.number || ""}，发完点「我发好了」`;
+      stateEl.textContent =
+        `网易要求上行短信：发送「${nteLoginState.sms?.content || ""}」到 ${nteLoginState.sms?.number || ""}，发完点「我发好了」` +
+        (nteLoginState.sms?.hint ? `（网易提示：${nteLoginState.sms.hint}）` : "");
     } else if (st === "need_password") {
       stateEl.textContent = "需要密码，请在密码框填写后重新点「登录」";
     } else if (st === "starting") {
@@ -946,6 +965,9 @@
       account: $("nte-acct").value.trim(),
       room: $("nte-room").value.trim(),
       roomPassword: $("nte-room-pass").value,
+      roomKind: $("nte-room-kind").value,
+      localHost: $("nte-local-host").value.trim(),
+      localPort: $("nte-local-port").value.trim(),
       displayName: $("nte-display").value.trim(),
       engineVersion: $("nte-engine-ver").value.trim(),
       patchVersion: $("nte-patch-ver").value.trim(),
@@ -972,7 +994,11 @@
     $("nte-acct").value = c.account || "";
     $("nte-room").value = c.room || "";
     $("nte-room-pass").value = c.roomPassword || "";
+    $("nte-room-kind").value = ["lobby", "realms", "local"].includes(c.roomKind) ? c.roomKind : "rental";
+    $("nte-local-host").value = c.localHost || "";
+    $("nte-local-port").value = c.localPort || "";
     $("nte-display").value = c.displayName || "";
+    nteUpdateRoomKind();
     $("nte-engine-ver").value = c.engineVersion || "";
     $("nte-patch-ver").value = c.patchVersion || "";
     $("nte-protocol").value = c.protocol || "";
@@ -989,7 +1015,7 @@
       return;
     }
     $("nte-room-list").textContent = "搜索中…";
-    const r = await post("/api/netease-service/rooms", { keyword });
+    const r = await post("/api/netease-service/rooms", { keyword, roomKind: $("nte-room-kind").value });
     if (!r || !r.ok) {
       $("nte-room-list").textContent = "搜索失败：" + ((r && r.error) || "未知错误");
       return;
@@ -1017,9 +1043,18 @@
   async function nteServiceAction(action, extra) {
     const body = { action, ...(extra || {}) };
     if (action === "start" || action === "restart") {
+      const kind = $("nte-room-kind").value;
       body.mode = $("nte-use-cfg").checked ? "cfg" : "account";
-      body.keyword = $("nte-room").value.trim();
-      body.roomPassword = $("nte-room-pass").value;
+      body.roomKind = kind;
+      if (kind === "local") {
+        body.localHost = $("nte-local-host").value.trim();
+        body.localPort = $("nte-local-port").value.trim();
+      } else if (kind === "realms") {
+        body.keyword = $("nte-realms-sid").value.trim();
+      } else {
+        body.keyword = $("nte-room").value.trim();
+        body.roomPassword = $("nte-room-pass").value;
+      }
     }
     $("nte-svc-state").textContent = action === "stop" ? "停止中…" : "启动中（解析房间地址 + 拉起引擎）…";
     const r = await post("/api/netease-service/action", body);
@@ -1078,6 +1113,59 @@
   $("lan-on").onclick = () => lanSet(true);
   $("lan-off").onclick = () => lanSet(false);
   lanLoad();
+
+  /* ---- 房间类型：租赁服 / 联机大厅 / 山头服 / 本地联机 ---- */
+  function nteUpdateRoomKind() {
+    const kind = $("nte-room-kind").value;
+    $("nte-room-group").style.display = kind === "rental" || kind === "lobby" ? "block" : "none";
+    $("nte-realms-group").style.display = kind === "realms" ? "block" : "none";
+    $("nte-local-group").style.display = kind === "local" ? "block" : "none";
+    if (kind === "realms" && !$("nte-realms-list").textContent) {
+      $("nte-realms-list").textContent = "点「刷新山头服列表」查看账号下的山头服（或用邀请码加入）";
+    }
+  }
+
+  async function nteRealmsRefresh(joinCode) {
+    $("nte-realms-list").textContent = joinCode ? "正在加入并刷新…" : "刷新中…";
+    const r = await post("/api/netease-service/realms", joinCode ? { action: "join", code: joinCode } : { action: "list" });
+    if (!r || !r.ok) {
+      $("nte-realms-list").textContent = "失败：" + ((r && r.error) || "未知错误");
+      return;
+    }
+    const box = $("nte-realms-list");
+    box.textContent = "";
+    if (!r.realms.length) {
+      box.textContent = "没有找到山头服（邀请码加入后会自动刷新）";
+      return;
+    }
+    for (const x of r.realms.slice(0, 12)) {
+      const btn = document.createElement("button");
+      btn.className = "btn small ghost";
+      btn.style.margin = "0 6px 6px 0";
+      btn.textContent = `${x.name}（${x.sid}）${x.userName ? " · " + x.userName : ""}`;
+      btn.onclick = () => {
+        $("nte-realms-sid").value = x.sid;
+        nteSaveAccount({});
+        box.textContent = `已选择：${x.name}（${x.sid}）`;
+      };
+      box.appendChild(btn);
+    }
+  }
+
+  $("nte-room-kind").addEventListener("change", () => {
+    nteUpdateRoomKind();
+    nteSaveAccount({});
+  });
+  $("nte-realms-refresh").onclick = () => nteRealmsRefresh("");
+  $("nte-realms-join").onclick = () => {
+    const code = $("nte-realms-code").value.trim();
+    if (!code) {
+      $("nte-realms-list").textContent = "先填邀请码";
+      return;
+    }
+    nteRealmsRefresh(code);
+  };
+  nteUpdateRoomKind();
 
   /* ---- 高级：mc.cfg 旧方式 ---- */
   let nteCfg = null;
@@ -1166,7 +1254,7 @@
   $("nte-svc-start").onclick = () => nteServiceAction("start");
   $("nte-svc-stop").onclick = () => nteServiceAction("stop");
   $("nte-svc-restart").onclick = () => nteServiceAction("restart");
-  for (const id of ["nte-acct", "nte-room", "nte-room-pass", "nte-display", "nte-engine-ver", "nte-patch-ver", "nte-protocol"]) {
+  for (const id of ["nte-acct", "nte-room", "nte-room-pass", "nte-room-kind", "nte-display", "nte-engine-ver", "nte-patch-ver", "nte-protocol"]) {
     $(id).addEventListener("change", () => nteSaveAccount({}));
   }
   document.getElementById("nte-cfg-file").onchange = (ev) => {

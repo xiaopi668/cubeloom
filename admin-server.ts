@@ -16,13 +16,21 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import {
   X19LoginSession,
+  isMainlandPhone,
+  normalizeLoginAccount,
   resolveX19LoginBinary,
   type X19LoginRequest,
 } from "./src/netease-account";
 import {
   buildEngineArgs,
   redactEngineArgs,
+  joinRealmsByCode,
+  listRealms,
+  parseLocalEndpoint,
+  resolveLobbyRoom,
+  resolveRealmsAddress,
   resolveRentalRoom,
+  searchLobbyRooms,
   searchRentalServers,
 } from "./src/netease-room";
 
@@ -810,6 +818,10 @@ type AccountCfg = {
   account: string;
   room: string;
   roomPassword: string;
+  /** rental / lobby / realms / local */
+  roomKind: string;
+  localHost: string;
+  localPort: string;
   displayName: string;
   /** 可选：覆盖引擎版本号 / 协议（默认用 VQ PE 的 3.8.x 与引擎内置协议） */
   engineVersion: string;
@@ -829,6 +841,9 @@ function readAccountCfg(): AccountCfg {
     account: String(raw.account ?? ""),
     room: String(raw.room ?? ""),
     roomPassword: String(raw.roomPassword ?? ""),
+    roomKind: ["lobby", "realms", "local"].includes(String(raw.roomKind ?? "")) ? String(raw.roomKind) : "rental",
+    localHost: String(raw.localHost ?? ""),
+    localPort: String(raw.localPort ?? ""),
     displayName: String(raw.displayName ?? ""),
     engineVersion: String(raw.engineVersion ?? ""),
     patchVersion: String(raw.patchVersion ?? ""),
@@ -877,11 +892,15 @@ function startX19Login(input: any) {
   const busy = x19Session && ["starting", "need_sms", "need_upstream", "need_password"].includes(x19Session.state.status);
   if (busy) return { ok: false, error: "已有一次登录正在进行，请先完成或取消" };
 
-  const account = String(input?.account ?? "").trim();
+  // 手机号统一成 11 位（去 +86/空格/横线）；邮箱只 trim
+  const account = normalizeLoginAccount(String(input?.account ?? ""));
   const password = String(input?.password ?? "");
   let mode = String(input?.mode ?? "").trim() as X19LoginRequest["mode"];
   if (mode !== "email" && mode !== "phone" && mode !== "sms" && mode !== "sauth") {
-    mode = account.includes("@") ? "email" : /^1\d{10}$/.test(account) ? "phone" : "sms";
+    mode = account.includes("@") ? "email" : isMainlandPhone(account) ? "phone" : "sms";
+  }
+  if (mode === "phone" && !isMainlandPhone(account)) {
+    return { ok: false, error: "手机号登录需要 11 位大陆号码（不带 +86）" };
   }
   if (mode !== "sauth" && !account) return { ok: false, error: "请填写网易邮箱或手机号" };
   if ((mode === "email" || mode === "phone") && !password) return { ok: false, error: "请填写密码" };
@@ -936,12 +955,64 @@ function logoutX19() {
 
 /** 房间号/名称 → 地址（面板上的「测试」和启动都用它） */
 async function resolveRoomForPanel(body: any) {
+  const cfg = readAccountCfg();
+  const keyword = String(body?.keyword ?? cfg.room ?? "").trim();
+  const password = String(body?.roomPassword ?? cfg.roomPassword ?? "");
+  const rawKind = String(body?.roomKind ?? cfg.roomKind ?? "rental");
+  const kind = ["lobby", "realms", "local"].includes(rawKind) ? rawKind : "rental";
+
+  if (kind === "local") {
+    const address = parseLocalEndpoint({
+      host: String(body?.localHost ?? cfg.localHost ?? ""),
+      port: String(body?.localPort ?? cfg.localPort ?? ""),
+      keyword,
+    });
+    return {
+      kind,
+      entityId: "0",
+      name: "本地联机",
+      hasPwd: false,
+      playerCount: 0,
+      capacity: 0,
+      host: address.host,
+      port: address.port,
+    };
+  }
+
   const cred = requireCred();
-  const keyword = String(body?.keyword ?? readAccountCfg().room ?? "").trim();
-  if (!keyword) throw new Error("请填写房间号或房间名");
-  const password = String(body?.roomPassword ?? readAccountCfg().roomPassword ?? "");
+
+  if (kind === "realms") {
+    if (!keyword) throw new Error("请填写山头服 ID 或邀请码");
+    const address = await resolveRealmsAddress(keyword, { userId: cred.entityId, token: cred.token });
+    return {
+      kind,
+      entityId: keyword,
+      name: keyword,
+      hasPwd: false,
+      playerCount: 0,
+      capacity: 0,
+      host: address.host,
+      port: address.port,
+    };
+  }
+
+  if (kind === "lobby") {
+    const resolved = await resolveLobbyRoom(keyword, password, { userId: cred.entityId, token: cred.token });
+    return {
+      kind,
+      entityId: resolved.server.entityId,
+      name: resolved.server.name,
+      hasPwd: resolved.server.hasPwd,
+      playerCount: resolved.server.playerCount,
+      capacity: resolved.server.maxCount,
+      host: resolved.address.host,
+      port: resolved.address.port,
+    };
+  }
+
   const resolved = await resolveRentalRoom(keyword, password, { userId: cred.entityId, token: cred.token });
   return {
+    kind,
     entityId: resolved.server.entityId,
     name: resolved.server.name,
     hasPwd: resolved.server.hasPwd,
@@ -988,7 +1059,13 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) };
   }
-  const cred = requireCred();
+  // 本地联机不需要网易登录：引擎会用自签名链走本地会话
+  const cred =
+    room.kind === "local"
+      ? x19Cred || { entityId: "1", name: "Cubeloom", token: "cubeloom-local", at: Date.now(), expiresAt: Date.now() + 86400_000 }
+      : requireCred();
+  const serverKind =
+    room.kind === "lobby" ? "LobbyGame" : room.kind === "realms" ? "DomainGame" : room.kind === "local" ? "LocalGame" : "RentalGame";
   let argv: string[];
   try {
     argv = [
@@ -997,6 +1074,7 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
         userId: cred.entityId,
         token: cred.token,
         entityId: room.entityId,
+        serverKind,
         host: room.host,
         port: room.port,
         displayName: cfg.displayName || cred.name || "Cubeloom",
@@ -1009,10 +1087,14 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) };
   }
-  saveAccountCfg({ room: keyword, roomPassword: String(body?.roomPassword ?? cfg.roomPassword ?? "") });
+  if (room.kind === "local") {
+    saveAccountCfg({ localHost: room.host, localPort: room.port });
+  } else if (room.kind !== "realms") {
+    saveAccountCfg({ room: keyword, roomPassword: String(body?.roomPassword ?? cfg.roomPassword ?? "") });
+  }
   const fullArgv = engineArgvWithWine(argv);
   if (!fullArgv) return { ok: false, error: "找不到 wine，无法在非 Windows 平台启动引擎" };
-  log(`账号模式启动：房间 ${room.name}（${room.entityId}）→ ${room.host}:${room.port}`);
+  log(`账号模式启动：${room.kind === "lobby" ? "联机大厅" : "租赁服"} ${room.name}（${room.entityId}）→ ${room.host}:${room.port}`);
   log(`引擎参数：${redactEngineArgs(fullArgv.slice(IS_WIN ? 1 : 2)).join(" ")}`);
   const r = spawnNetease(fullArgv);
   return r.ok ? { ok: true, mode: "account", room } : r;
@@ -1571,6 +1653,24 @@ const server = createServer(async (req, res) => {
     }
 
     // ---- 日志文件列表 ----
+    // ---- 山头服：列表 / 邀请码加入 ----
+    if (p === "/api/netease-service/realms" && req.method === "POST") {
+      const body = await readJson(req);
+      try {
+        const cred = requireCred();
+        const action = String(body?.action ?? "list");
+        if (action === "join") {
+          const code = String(body?.code ?? "").trim();
+          if (!code) return sendJson(res, 200, { ok: false, error: "请填写邀请码" });
+          await joinRealmsByCode(code, { userId: cred.entityId, token: cred.token });
+        }
+        const realms = await listRealms({ userId: cred.entityId, token: cred.token });
+        return sendJson(res, 200, { ok: true, realms });
+      } catch (e: any) {
+        return sendJson(res, 200, { ok: false, error: e?.message ?? String(e) });
+      }
+    }
+
     // ---- 局域网 / 手机访问开关（写 network.json，重启后生效）----
     if (p === "/api/admin/lan" && req.method === "GET") {
       const enabled = ADMIN_HOST === "0.0.0.0" || ADMIN_HOST === "::";
@@ -1646,6 +1746,9 @@ const server = createServer(async (req, res) => {
       if (typeof body.account === "string") patch.account = body.account.trim();
       if (typeof body.room === "string") patch.room = body.room.trim();
       if (typeof body.roomPassword === "string") patch.roomPassword = body.roomPassword;
+      if (["rental", "lobby", "realms", "local"].includes(String(body.roomKind))) patch.roomKind = body.roomKind;
+      if (typeof body.localHost === "string") patch.localHost = body.localHost.trim();
+      if (typeof body.localPort === "string") patch.localPort = body.localPort.trim();
       if (typeof body.displayName === "string") patch.displayName = body.displayName.trim();
       if (typeof body.engineVersion === "string") patch.engineVersion = body.engineVersion.trim();
       if (typeof body.patchVersion === "string") patch.patchVersion = body.patchVersion.trim();
@@ -1683,6 +1786,20 @@ const server = createServer(async (req, res) => {
         const cred = requireCred();
         const keyword = String(body?.keyword ?? "").trim();
         if (!keyword) return sendJson(res, 200, { ok: false, error: "请填写房间号或房间名" });
+        const kind = String(body?.roomKind ?? "") === "lobby" ? "lobby" : "rental";
+        if (kind === "lobby") {
+          const list = await searchLobbyRooms(keyword, { userId: cred.entityId, token: cred.token });
+          return sendJson(res, 200, {
+            ok: true,
+            rooms: list.map((r) => ({
+              entityId: r.entityId,
+              name: r.name,
+              hasPwd: r.hasPwd,
+              playerCount: r.playerCount,
+              capacity: r.maxCount,
+            })),
+          });
+        }
         const rooms = await searchRentalServers(keyword, { userId: cred.entityId, token: cred.token });
         return sendJson(res, 200, { ok: true, rooms });
       } catch (e: any) {

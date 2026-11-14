@@ -641,7 +641,8 @@ const server = createServer(async (req, res) => {
   }
 });
 
-async function boot() {
+/** 机器人启动/等桥是慢操作（进服可能要几十秒），不能挡住 HTTP 服务上线 */
+async function startBot() {
   if (managedBot) {
     managedBot.start();
     const ready = await managedBot.waitReady();
@@ -649,14 +650,19 @@ async function boot() {
   }
   if (!SOCKET_PATH) {
     logError("未设置 FB_NETEASE_SOCKET，无法连接机器人事件桥");
-  } else {
-    log(`${APP_NAME} 启动：事件桥 ${SOCKET_PATH}`);
-    log(describeBaseline());
-    bridge.subscribeEvents("cubeloom");
-    bridge.connect();
+    return;
   }
+  log(`${APP_NAME} 启动：事件桥 ${SOCKET_PATH}`);
+  log(describeBaseline());
+  bridge.subscribeEvents("cubeloom");
+  bridge.connect();
+}
+
+function boot() {
+  // 先让 /health 可用，再后台拉起机器人；否则面板会误判「服务没起来」
   server.listen(PORT, HOST, () => {
     log(`网易版服务已启动：http://${HOST}:${PORT}`);
+    void startBot();
   });
 }
 

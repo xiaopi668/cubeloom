@@ -29,6 +29,26 @@ function candidateRoots(): string[] {
   return roots;
 }
 
+/**
+ * 账号归一化：网易 mpay 只认 **11 位大陆手机号**（不带 +86 / 区号 / 空格 / 横线）。
+ * 用户从通讯录/短信里复制过来的 +86 138-0000-0000 这种也顺手处理掉，
+ * 避免因为格式问题被判成"未知账号"。
+ */
+export function normalizeLoginAccount(raw: string): string {
+  let s = String(raw ?? "").trim();
+  if (!s || s.includes("@")) return s;
+  s = s.replace(/[\s\-()（）]/g, "");
+  // +86 / 0086 / 86 前缀只在后面正好是 11 位手机号时去掉
+  s = s.replace(/^(?:\+?86|0086)(?=1\d{10}$)/, "");
+  s = s.replace(/^0+(?=1\d{10}$)/, "");
+  return s;
+}
+
+/** 是否 11 位大陆手机号（1 开头） */
+export function isMainlandPhone(s: string): boolean {
+  return /^1\d{10}$/.test(String(s ?? "").trim());
+}
+
 export type X19LoginMode = "email" | "phone" | "sms" | "sauth";
 
 export type X19LoginRequest = {
@@ -58,7 +78,7 @@ export type X19LoginState = {
   token: string;
   error: string;
   notices: string[];
-  sms: { phone: string; upstream: boolean; number: string; content: string } | null;
+  sms: { phone: string; upstream: boolean; number: string; content: string; hint: string } | null;
   startedAt: number;
   finishedAt: number;
 };
@@ -224,7 +244,13 @@ export class X19LoginSession {
         break;
       case "sms_required":
         this.state.status = "need_sms";
-        this.state.sms = { phone: String(msg.phone ?? ""), upstream: false, number: "", content: "" };
+        this.state.sms = {
+          phone: String(msg.phone ?? ""),
+          upstream: false,
+          number: "",
+          content: "",
+          hint: String(msg.hint ?? ""),
+        };
         this.pushNotice(`已发送短信验证码到 ${msg.phone ?? "手机号"}`);
         break;
       case "sms_upstream":
@@ -234,6 +260,7 @@ export class X19LoginSession {
           upstream: true,
           number: String(msg.number ?? ""),
           content: String(msg.content ?? ""),
+          hint: String(msg.hint ?? ""),
         };
         this.pushNotice(`网易要求上行短信：发送「${msg.content}」到 ${msg.number}`);
         break;

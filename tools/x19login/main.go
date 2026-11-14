@@ -163,6 +163,7 @@ func askCode(c *neteasex19.SmsChallenge) (string, error) {
 			"phone":   c.Phone,
 			"number":  c.Number,
 			"content": c.Content,
+			"hint":    c.Hint,
 		})
 		var r reply
 		if err := readJSON(context.Background(), &r); err != nil {
@@ -175,7 +176,7 @@ func askCode(c *neteasex19.SmsChallenge) (string, error) {
 		return "sent", nil
 	}
 
-	emit(map[string]any{"event": "sms_required", "upstream": false, "phone": c.Phone})
+	emit(map[string]any{"event": "sms_required", "upstream": false, "phone": c.Phone, "hint": c.Hint})
 	var r reply
 	if err := readJSON(context.Background(), &r); err != nil {
 		return "", err
@@ -199,14 +200,47 @@ func askPassword() (string, error) {
 	return r.Password, nil
 }
 
+// normalizeAccount 把手机号统一成 11 位（去 +86/0086/空格/横线/括号），邮箱只 trim。
+// 网易 mpay 只认 11 位大陆号码，不带区号。
+func normalizeAccount(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.Contains(s, "@") {
+		return s
+	}
+	s = strings.NewReplacer(" ", "", "\t", "", "-", "", "(", "", ")", "", "（", "", "）", "").Replace(s)
+	for _, prefix := range []string{"+86", "0086", "86"} {
+		if strings.HasPrefix(s, prefix) && isPhone11(s[len(prefix):]) {
+			s = s[len(prefix):]
+			break
+		}
+	}
+	for strings.HasPrefix(s, "0") && isPhone11(strings.TrimLeft(s, "0")) {
+		s = strings.TrimLeft(s, "0")
+	}
+	return s
+}
+
+func isPhone11(s string) bool {
+	if len(s) != 11 || s[0] != '1' {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func run(ctx context.Context, req *loginRequest) (*neteasex19.Session, error) {
+	req.Account = normalizeAccount(req.Account)
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
 	if mode == "" {
 		if req.Sauth != "" {
 			mode = "sauth"
 		} else if strings.Contains(req.Account, "@") {
 			mode = "email"
-		} else if strings.HasPrefix(req.Account, "1") && len(req.Account) == 11 {
+		} else if isPhone11(req.Account) {
 			mode = "phone"
 		} else {
 			mode = "sms"
@@ -221,6 +255,9 @@ func run(ctx context.Context, req *loginRequest) (*neteasex19.Session, error) {
 
 	if mode != "sauth" && strings.TrimSpace(req.Account) == "" {
 		return nil, errors.New("缺少账号（网易邮箱或手机号）")
+	}
+	if (mode == "phone" || mode == "sms") && !isPhone11(req.Account) {
+		return nil, fmt.Errorf("手机号登录需要 11 位大陆号码（不带 +86），收到 %q", req.Account)
 	}
 	if (mode == "email" || mode == "phone") && req.Password == "" {
 		pwd, err := askPassword()

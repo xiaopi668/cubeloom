@@ -218,12 +218,170 @@ export async function resolveRentalRoom(
   return { server, address };
 }
 
+/** 联机大厅走 apigateway；房间搜索仍走 mclobt */
+const LOBBY_HOST = "https://g79apigatewayobt.minecraft.cn";
+export const DEFAULT_LOBBY_VERSION = "1.21.120";
+
+export type LobbyRoom = {
+  entityId: string;
+  name: string;
+  hasPwd: boolean;
+  playerCount: number;
+  maxCount: number;
+  version: string;
+  lobbyManifestVersion: string;
+};
+
+/** 联机大厅：按房间号/名称搜索 */
+export async function searchLobbyRooms(
+  keyword: string,
+  cred: X19Credential,
+  opts: X19PostOptions & { version?: string } = {}
+): Promise<LobbyRoom[]> {
+  const body = JSON.stringify({
+    room_name: String(keyword || "").trim(),
+    res_id: "",
+    version: opts.version || DEFAULT_LOBBY_VERSION,
+    offset: 0,
+    length: 50,
+  });
+  const data = await x19Post<any>("/online-lobby-room/query/search-by-name", body, cred, opts);
+  const list: any[] = Array.isArray(data?.entities) ? data.entities : [];
+  return list
+    .map((item) => {
+      const members = Array.isArray(item?.member_uids) ? item.member_uids : [];
+      return {
+        entityId: String(item?.entity_id ?? ""),
+        name: String(item?.room_name ?? ""),
+        hasPwd: Number(item?.password ?? 0) === 1 || item?.password === true,
+        playerCount: members.length,
+        maxCount: Number(item?.max_count ?? 0) || 0,
+        version: String(item?.version ?? ""),
+        lobbyManifestVersion: String(item?.lobby_manifest_version ?? ""),
+      };
+    })
+    .filter((r) => !!r.entityId);
+}
+
+/** 联机大厅：进房 → 取服务器地址 → 退房（和 VQ 的顺序一致） */
+export async function resolveLobbyAddress(
+  room: LobbyRoom,
+  password: string,
+  cred: X19Credential,
+  opts: X19PostOptions = {}
+): Promise<RentalAddress> {
+  const enterBody = JSON.stringify({
+    room_id: room.entityId,
+    password: String(password ?? ""),
+    lobby_manifest_version: room.lobbyManifestVersion || "",
+    check_visibilily: true,
+  });
+  await x19Post("/online-lobby-room-enter", enterBody, cred, { ...opts, host: LOBBY_HOST });
+
+  let data: any;
+  try {
+    data = await x19Post<any>("/online-lobby-game-enter", "", cred, { ...opts, host: LOBBY_HOST });
+  } finally {
+    // 拿到地址后释放房间席位（VQ 也是这么做的），失败不影响进服
+    const leaveBody = JSON.stringify({ room_id: room.entityId, team_quit: false });
+    x19Post("/online-lobby-room-enter/leave-room", leaveBody, cred, { ...opts, host: LOBBY_HOST }).catch(() => {});
+  }
+  const host = String(data?.entity?.server_host ?? "").trim();
+  const port = String(data?.entity?.server_port ?? "").trim();
+  if (!host || !port) throw new X19ApiError("网易没有返回联机大厅地址（房间已满/密码错误/房间不存在）");
+  return { host, port };
+}
+
+/** 联机大厅：搜索 + 选房 + 地址 */
+export async function resolveLobbyRoom(
+  keyword: string,
+  password: string,
+  cred: X19Credential,
+  opts: X19PostOptions = {}
+): Promise<{ server: LobbyRoom; address: RentalAddress }> {
+  const list = await searchLobbyRooms(keyword, cred, opts);
+  const key = String(keyword || "").trim();
+  const exact = list.find((r) => r.entityId === key);
+  const server = exact || (list.length === 1 ? list[0] : null);
+  if (!server) {
+    if (!list.length) throw new X19ApiError(`没找到联机大厅房间「${key}」`);
+    const names = list.slice(0, 8).map((r) => `${r.name}（${r.entityId}）`).join("、");
+    throw new X19ApiError(`「${key}」匹配到 ${list.length} 个联机大厅房间：${names}；请填完整房间号`);
+  }
+  if (server.hasPwd && !password) throw new X19ApiError(`联机大厅房间「${server.name}」需要密码`);
+  const address = await resolveLobbyAddress(server, password, cred, opts);
+  return { server, address };
+}
+
+export type RealmsServer = {
+  sid: string;
+  name: string;
+  userId: string;
+  userName: string;
+  status: number;
+};
+
+/** 山头服：列出账号可见的服务器 */
+export async function listRealms(cred: X19Credential, opts: X19PostOptions = {}): Promise<RealmsServer[]> {
+  const data = await x19Post<any>("/domain-server/get-other-servers", "{}", cred, opts);
+  const list: any[] = Array.isArray(data?.entities) ? data.entities : [];
+  return list
+    .map((item) => ({
+      sid: String(item?.sid ?? ""),
+      name: String(item?.name ?? ""),
+      userId: String(item?.user_id ?? ""),
+      userName: String(item?.user_name ?? ""),
+      status: Number(item?.status ?? 0) || 0,
+    }))
+    .filter((r) => !!r.sid);
+}
+
+/** 山头服：邀请码加入 */
+export async function joinRealmsByCode(code: string, cred: X19Credential, opts: X19PostOptions = {}): Promise<void> {
+  const body = JSON.stringify({ code: String(code ?? "").trim() });
+  await x19Post("/domain-server/join-server-with-invite-code", body, cred, opts);
+}
+
+/** 山头服：sid → 地址 */
+export async function resolveRealmsAddress(
+  sid: string,
+  cred: X19Credential,
+  opts: X19PostOptions = {}
+): Promise<RentalAddress> {
+  const body = JSON.stringify({ sid: String(sid ?? "").trim() });
+  const data = await x19Post<any>("/domain-server/req-enter-domain-server", body, cred, opts);
+  const host = String(data?.entity?.server_host ?? "").trim();
+  const port = String(data?.entity?.server_port ?? "").trim();
+  if (!host || !port) throw new X19ApiError("网易没有返回山头服地址（sid 不对或没有权限）");
+  return { host, port };
+}
+
+/** 本地联机：解析 IP:端口（也接受 IPv6 / 只填端口时用默认主机） */
+export function parseLocalEndpoint(input: { host?: string; port?: string | number; keyword?: string }): RentalAddress {
+  let host = String(input.host ?? "").trim();
+  let port = String(input.port ?? "").trim();
+  const keyword = String(input.keyword ?? "").trim();
+  if ((!host || !port) && keyword) {
+    const m = keyword.match(/^\[([^\]]+)\](?::(\d{1,5}))?$/) || keyword.match(/^([^:]+):(\d{1,5})$/);
+    if (m) {
+      host = m[1];
+      port = m[2] || port;
+    } else if (!host) {
+      host = keyword;
+    }
+  }
+  if (!host) throw new X19ApiError("请填写本地联机的主机地址（例如 192.168.1.5）");
+  const p = Number(port || 19132);
+  if (!Number.isInteger(p) || p < 1 || p > 65535) throw new X19ApiError("端口需要在 1–65535 之间");
+  return { host, port: String(p) };
+}
+
 export type EngineLaunchOptions = {
   userId: string;
   token: string;
   entityId: string;
-  /** RentalGame / LobbyGame / DomainGame */
-  serverKind?: "RentalGame" | "LobbyGame" | "DomainGame";
+  /** RentalGame / LobbyGame / DomainGame / LocalGame */
+  serverKind?: "RentalGame" | "LobbyGame" | "DomainGame" | "LocalGame";
   host: string;
   port: string | number;
   displayName: string;

@@ -198,7 +198,7 @@ public class MainActivity extends Activity {
 
     private void showModeDialog() {
         String[] items = {
-                "本机模式：手机内运行面板（不含网易进服）",
+                "本机模式：手机内运行面板 + 网易引擎",
                 "连接电脑 / 服务器：网易进服在那边跑",
         };
         AlertDialog.Builder b = new AlertDialog.Builder(this)

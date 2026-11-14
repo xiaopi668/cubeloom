@@ -332,7 +332,7 @@ Actions 页面里对应 workflow 的 **Artifacts**（tag 构建还会附带 Rele
 |---|---|---|
 | Windows | `Cubeloom Setup <版本>.exe` / `Cubeloom-<版本>-win.zip` | 运行安装包；或解压后双击 `Cubeloom.exe` |
 | Linux | `Cubeloom-<版本>.AppImage` | `chmod +x` 后直接运行 |
-| Android | `Cubeloom-Android-<版本>-debug.apk` | 传到手机安装（允许未知来源），打开 App |
+| Android | `Cubeloom-Android-<版本>-release.apk` | 传到手机安装（允许未知来源），打开 App；`npm run build:android -- --debug` 可出调试包 |
 
 > 产物**未签名**：Windows 首次运行会弹 SmartScreen（更多信息 → 仍要运行）；macOS 需要
 > `xattr -dr com.apple.quarantine /Applications/Cubeloom.app`；Android 是 debug 签名，仅自用/测试。
@@ -392,7 +392,8 @@ npm run build          # server / desktop / portable / mobile bundle
 npm run build:engine   # Linux/macOS 原生网易引擎（不用 Wine；CI 会自动跑）
 npm run build:engine:android  # Android arm64/x86_64 原生引擎（Chaquopy Python 3.12）
 npm run dist:linux     # AppImage；Windows/macOS 用 dist:win / dist:mac
-npm run build:android  # APK；需要 Android SDK + NDK 27 + Gradle 8.13
+npm run build:android  # release APK（自动生成本地 keystore；可用 CUBELOOM_KEYSTORE 指定）
+npm run build:android -- --debug  # debug APK（开发用）
 ```
 
 ## 安全说明

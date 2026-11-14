@@ -9,8 +9,8 @@ android {
         applicationId 'io.github.cubeloom'
         minSdk 24
         targetSdk 36
-        versionCode 3
-        versionName '0.1.5'
+        versionCode 4
+        versionName '0.1.6'
 
         ndk {
             // 真机主要 arm64；x86_64 给模拟器
@@ -30,9 +30,27 @@ android {
         }
     }
 
+    def releaseStore = System.getenv("CUBELOOM_KEYSTORE") ?: "${rootDir}/cubeloom-release.keystore"
+    def releaseStorePass = System.getenv("CUBELOOM_KEYSTORE_PASSWORD") ?: "cubeloom"
+    def releaseAlias = System.getenv("CUBELOOM_KEY_ALIAS") ?: "cubeloom"
+    def releaseKeyPass = System.getenv("CUBELOOM_KEY_PASSWORD") ?: releaseStorePass
+    def hasReleaseKey = file(releaseStore).exists()
+
+    signingConfigs {
+        release {
+            if (hasReleaseKey) {
+                storeFile file(releaseStore)
+                storePassword releaseStorePass
+                keyAlias releaseAlias
+                keyPassword releaseKeyPass
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            if (hasReleaseKey) signingConfig signingConfigs.release
         }
     }
 

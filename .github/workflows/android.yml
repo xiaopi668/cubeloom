@@ -47,7 +47,18 @@ jobs:
           npm run build:engine:android
       - name: 预编译 server / mobile bundle
         run: npm run build
+      - name: 准备 release 签名（可选 secrets）
+        env:
+          KS_B64: ${{ secrets.CUBELOOM_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > packaging/android/cubeloom-release.keystore
+          fi
       - name: 构建 APK
+        env:
+          CUBELOOM_KEYSTORE_PASSWORD: ${{ secrets.CUBELOOM_KEYSTORE_PASSWORD }}
+          CUBELOOM_KEY_ALIAS: ${{ secrets.CUBELOOM_KEY_ALIAS }}
+          CUBELOOM_KEY_PASSWORD: ${{ secrets.CUBELOOM_KEY_PASSWORD }}
         run: npm run build:android
       - name: 上传 APK
         uses: actions/upload-artifact@v4

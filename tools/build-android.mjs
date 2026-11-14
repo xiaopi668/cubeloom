@@ -103,15 +103,32 @@ function installEngineLibs() {
   else console.warn("  [engine] 没有原生引擎产物；APK 只能远程模式（先跑 npm run build:engine:android）");
 }
 
+function ensureReleaseKeystore() {
+  if (process.env.CUBELOOM_KEYSTORE) return;
+  const ks = path.join(ANDROID, "cubeloom-release.keystore");
+  if (fs.existsSync(ks)) return;
+  console.log("生成本地 release keystore（cubeloom-release.keystore，已 gitignore）…");
+  run("keytool", [
+    "-genkeypair", "-v", "-keystore", ks, "-alias", "cubeloom",
+    "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000",
+    "-storepass", "cubeloom", "-keypass", "cubeloom",
+    "-dname", "CN=Cubeloom, OU=Cubeloom, O=Cubeloom, C=CN",
+  ]);
+}
+
 function build() {
+  const release = !process.argv.includes("--debug");
+  if (release) ensureReleaseKeystore();
   const gradle = process.env.GRADLE_BIN || path.join(ANDROID, "gradlew");
   const cmd = fs.existsSync(gradle) ? gradle : "gradle";
-  const args = ["assembleDebug", "--no-daemon", "-Pandroid.injected.signing.store.file=", "-q"];
-  console.log(`运行 ${cmd} assembleDebug …`);
+  const task = release ? "assembleRelease" : "assembleDebug";
+  const args = [task, "--no-daemon", "-q"];
+  console.log(`运行 ${cmd} ${task} …`);
   run(cmd, args, { cwd: ANDROID });
-  const apk = path.join(APP, "build", "outputs", "apk", "debug", "app-debug.apk");
-  if (!fs.existsSync(apk)) throw new Error("没有找到 app-debug.apk");
-  const out = path.join(ROOT, "dist-app", `Cubeloom-Android-${pkg.version}-debug.apk`);
+  const variant = release ? "release" : "debug";
+  const apk = path.join(APP, "build", "outputs", "apk", variant, `app-${variant}.apk`);
+  if (!fs.existsSync(apk)) throw new Error(`没有找到 app-${variant}.apk`);
+  const out = path.join(ROOT, "dist-app", `Cubeloom-Android-${pkg.version}-${variant}.apk`);
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.copyFileSync(apk, out);
   const size = (fs.statSync(out).size / 1024 / 1024).toFixed(1);

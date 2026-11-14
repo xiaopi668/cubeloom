@@ -58,3 +58,6 @@ network.json
 
 # Android 原生引擎构建产物
 packaging/engine/android/
+
+# Android release 签名（本地生成，勿提交）
+packaging/android/cubeloom-release.keystore

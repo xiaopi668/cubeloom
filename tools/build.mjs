@@ -117,6 +117,14 @@ if (!onlyServer) {
     path.join(ROOT, "packaging", "desktop", "entitlements.mac.plist"),
     path.join(DESKTOP, "entitlements.mac.plist")
   );
+  // 应用图标：ico（Windows 安装包/EXE）、icns（macOS .app）、png（Linux / 窗口图标）
+  const iconDir = path.join(ROOT, "packaging", "desktop", "icons");
+  const buildRes = path.join(DESKTOP, "build");
+  fs.mkdirSync(buildRes, { recursive: true });
+  for (const name of ["icon.ico", "icon.icns", "icon.png"]) {
+    fs.copyFileSync(path.join(iconDir, name), path.join(buildRes, name));
+  }
+  fs.copyFileSync(path.join(iconDir, "icon.png"), path.join(DESKTOP, "icon.png"));
   // 可选：把 netease-bot/ 一起带进桌面端/便携版（没有就跳过）
   const botDir = path.join(ROOT, "netease-bot");
   if (fs.existsSync(botDir)) {
@@ -138,15 +146,18 @@ if (!onlyServer) {
       productName: "Cubeloom",
       asar: false,
       electronVersion: process.env.ELECTRON_VERSION || "38.2.0",
-      files: ["electron-main.cjs", "server/**", "admin/**", "netease-bot/**", "package.json"],
-      directories: { output: "../../dist-app" },
+      files: ["electron-main.cjs", "icon.png", "server/**", "admin/**", "netease-bot/**", "package.json"],
+      // buildResources 指向 build/，图标按 electron-builder 约定自动取 icon.ico / icon.icns / icon.png
+      directories: { output: "../../dist-app", buildResources: "build" },
+      icon: "build/icon.png",
       linux: { target: ["AppImage", "tar.gz"], category: "Utility" },
       // 签名靠环境变量：WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD（没有就跳过，产物仍是未签名）
-      win: { target: ["nsis", "zip"] },
+      win: { target: ["nsis", "zip"], icon: "build/icon.ico" },
       mac: {
         target: ["dmg", "zip"],
         category: "public.app-category.utilities",
         // 公证要求 Hardened Runtime；entitlements 里放开了 JIT 与原生库加载
+        icon: "build/icon.icns",
         hardenedRuntime: true,
         gatekeeperAssess: false,
         entitlements: "entitlements.mac.plist",

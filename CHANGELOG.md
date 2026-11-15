@@ -3,6 +3,13 @@
 版本号在 `package.json`（`version`）和 `packaging/android/app/build.gradle`（`versionName` / `versionCode`）两处同步。
 0.1.6 之前有 git tag（`v0.1.2` … `v0.1.6`）；之后按功能批次归纳，逐条提交见 GitHub 提交历史。
 
+## 0.2.2
+
+- 桌面端应用图标：Windows `.ico`（16–256 多尺寸）、macOS `.icns`（128–1024）、Linux/窗口 `icon.png`，Electron 窗口图标一并设置
+- Android 启动图标：补齐 `mipmap-*` 传统图标 + `mipmap-anydpi-v26` 自适应图标（深色底 `#0B0B0B`），Manifest 挂 `android:icon` / `roundIcon`
+- 修 macOS 打包：runner 的 bash 3.2 + `set -u` 下空数组 `"${FLAGS[@]}"` 会报 unbound variable（0.2.1 的 macOS 构建因此失败）
+- 版本 0.2.2（versionCode 36）
+
 ## 0.2.1
 
 - Windows 桌面构建改为**自签名**（secrets 已配 `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`，自签证书 `CN=Cubeloom`，2029-11 到期）

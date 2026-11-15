@@ -106,7 +106,8 @@ jobs:
           if [ "$os" = "ubuntu-latest" ]; then
             echo "Linux 不发签名证书（AppImage 不签）"
           fi
-          npx --yes electron-builder@26 --project build/desktop ${{ matrix.target }} --publish never "${FLAGS[@]}"
+          # 注意：macOS runner 的 bash 3.2 + set -u 下，空数组 "${FLAGS[@]}" 会报 unbound variable
+          npx --yes electron-builder@26 --project build/desktop ${{ matrix.target }} --publish never ${FLAGS[@]+"${FLAGS[@]}"}
       - name: 打印签名结果
         shell: bash
         run: |

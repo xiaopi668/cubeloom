@@ -134,6 +134,8 @@ function stopServer() {
 }
 
 function createWindow() {
+  // 图标：打包后与 electron-main.cjs 同目录；开发时可能不存在，存在才传
+  const iconPath = path.join(__dirname, "icon.png");
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -141,6 +143,7 @@ function createWindow() {
     minHeight: 640,
     backgroundColor: "#0b0b0b",
     title: "Cubeloom",
+    ...(fs.existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

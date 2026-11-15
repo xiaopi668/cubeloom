@@ -15,6 +15,15 @@ type Session struct {
 	// Name 昵称 (调用 GetSelfDetail 后自动填充)
 	Name string
 
+	// PeEntityID / PeToken 是 PE 通道 (基岩版) 的登录态; PE 接口只认它
+	PeEntityID uint64
+	PeToken    string
+	// PeError 记录 PE 通道认证失败原因 (x19 token 仍然可用)
+	PeError string
+
+	// sauth 登录时用的原始登录态 (PE 通道会复用)
+	sauth *SauthCookie
+
 	mu    sync.RWMutex
 	token string
 
@@ -53,6 +62,14 @@ func (s *Session) setToken(t string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.token = t
+}
+
+// SauthJSON 返回登录时用的 sauth（用于之后单独换 PE 通道 token）
+func (s *Session) SauthJSON() string {
+	if s.sauth == nil {
+		return ""
+	}
+	return s.sauth.JSON()
 }
 
 // Refresh 执行一次心跳, 成功后更新 token

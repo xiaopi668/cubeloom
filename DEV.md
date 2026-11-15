@@ -6,12 +6,15 @@
 
 | 层 | 技术 |
 |---|---|
-| 运行时 | Node.js ≥ 20（ESM，`tsx` 直接跑 TS，**无构建步骤**） |
+| 运行时 | Node.js ≥ 20（ESM，`tsx` 直接跑 TS，**无构建步骤**；Android 侧是 nodejs-mobile 的 Node 18） |
 | 协议 | 基岩版 WebSocket（`mcpews` 4.x）。`FB_WS_VERSION` 默认 `17104896`（= 1.5.0.0），mcpews 用它判断是否需要加密握手，**不要**照着「1.21」去改 |
 | HTTP | 原生 `node:http`，无框架（`admin-server.ts`、`main.ts` 控制口） |
 | 存储 | 仅本地文件（`logs/`、`admin/auth.json`），无数据库 |
 | 前端 | 原生 HTML/CSS/JS，无构建（仅 `admin/`） |
 | 进程 | `admin-server.ts` 单实例拉起一个 `main.ts`；也支持两个服务各自独立启动 |
+| 登录助手 | Go 1.23（`tools/x19login`，零第三方依赖）：mpay/x19 登录 + G79 PE 通道认证 |
+| Android 原生 | nodejs-mobile Node 18 + Chaquopy Python 3.12 + NDK 27 交叉编译的引擎 `.so` |
+| 构建 | Gradle 8.13 + AGP 8.12（Gradle 9.x 与 AGP 8.12 不兼容）；esbuild 打 CJS bundle |
 
 ## 2. 目录结构
 
@@ -24,8 +27,10 @@ src/
   session.ts         会话、--login 认证、连接限流、消息回执
   structure.ts       ParsedStructure → setblock/fill 命令
   structure-repair.ts 损坏 .mcstructure 修补（有损，见维护手册）
-  formats.ts         多格式识别（.mcstructure/.bdx/.litematic/.schem/.schematic/.nbt，.mcworld/.zip 取包内结构）
+  formats.ts         多格式识别（.mcstructure/.bdx/.vt/.litematic/.schem/.schematic/.nbt，.mcworld/.zip 取包内结构）
+  parsed-structure.ts 各格式解析结果 → ParsedStructure（含命令方块元数据）
   bdx.ts             BDX（PhoenixBuilder）指令流解析
+  vt.ts              VQ `.vt` 建筑（AES-256-CBC + Deflate + 命令方块）
   zip.ts             极简 ZIP 读取（.mcworld/.zip）
   nbt.ts             基岩版小端 NBT 读
   java-nbt.ts        Java 版大端 NBT 读
@@ -35,11 +40,14 @@ src/
   sender.ts          结构导入的发送窗口 / 回执追踪（每轮独立）
   effect.ts          plot / setBlocks 落块层
   utils.ts           回显层（tell_raw / actionbar）
-  netease-protocol.ts / netease-bridge.ts  网易版协议常量与事件桥
+  netease-protocol.ts / netease-bridge.ts  网易版协议常量与事件桥（TCP NDJSON 17999）
   netease-bot.ts     托管机器人进程（FB_NETEASE_BOT_CMD：启动/就绪/重启/收尾）
+  netease-account.ts 驱动 Go 登录助手（stdin/stdout NDJSON，密码不落盘）
+  netease-room.ts    房间解析（租赁服/联机大厅/山头服/本地联机）、X19 动态签名、组件领取
 admin/               管理面板前端（index.html / login.html / astrbot.css / *.js）
 admin/assets/        品牌图形
-tools/               set-password.mjs、check-sandbox.ts、build.mjs（打包预编译）
+tools/               set-password.mjs、check-sandbox.ts、build.mjs（打包预编译）、
+                     build-x19login.mjs（Go 助手）、build-engine*.mjs（原生引擎）、build-android.mjs
 deploy/              systemd 单元模板（cubeloom、cubeloom-netease）
 packaging/           分发：portable 启动脚本、desktop（Electron）、mobile（Termux / nodejs-mobile）
 vendor/ntvector/     随仓库分发的 NTvector 官方 release（MIT）+ 校验信息
@@ -58,6 +66,19 @@ logs/                运行日志（运行时生成，已 gitignore）
 玩家 ──/connect ws──> main.ts ──原版命令流──> 游戏服务器
                         ▲
                         └── 控制接口 127.0.0.1:11453（面板 / CLI 调用）
+```
+
+网易版是另一条链路（和 WS 版互不影响，可同时跑）：
+
+```
+面板 ──HTTP──> admin-server.ts (11452)
+                     │  spawn tools/x19login（stdin/stdout NDJSON，设备指纹 + mpay 登录）
+                     │  ──X19 动态签名──> g79mclobt / g79apigatewayobt（房间 → ip:port）
+                     ▼
+              netease-service.ts (11454) ──TCP NDJSON 17999──> cubeloom_bridge 插件
+                                                                    │ RakNet
+                                                                    ▼
+                                                             NTvector 引擎（原生 / Wine）
 ```
 
 单实例模型：一个 `admin-server.ts` 管一个 `main.ts`，没有多用户、没有实例编排、没有服务端账户体系。
@@ -85,13 +106,15 @@ npm run admin          # 面板 http://127.0.0.1:11452（会拉起 WS）
 npm run ws             # 只跑 WS（调试协议/命令流）
 npm run cli            # 终端交互版（连控制口）
 npm run check:sandbox  # 39 项断言：沙箱隔离、几何 API、鉴权矩阵、落块层、回显层
-npm test               # 72 条 node:test：沙箱/格式/修补器/坐标/鉴权/发送队列/网易桥/托管机器人
+npm test               # 113 条 node:test：沙箱/格式/修补器/坐标/鉴权/发送队列/网易桥/托管机器人/登录签名/房间解析
 npm run typecheck      # tsc --noEmit（strictNullChecks 打开）
+npm run build:x19login # Go 登录助手（本机版，tools/x19login/bin/x19login）
 npm run build          # 预编译 build/{server,desktop,portable,mobile}，打包前必跑
 ```
 
 调试技巧：
-- 端口都可用环境变量改（`FB_WS_PORT` / `FB_CONTROL_PORT` / `FB_ADMIN_PORT`），并行开多个实例时必改
+- 端口都可用环境变量改（`FB_WS_PORT` / `FB_CONTROL_PORT` / `FB_ADMIN_PORT` / `FB_NETEASE_PORT`），并行开多个实例时必改
+- 改了 `admin/` 或 `admin-server.ts` 之后打 APK：`build-android.mjs` 现在**每次都重打 mobile bundle**（以前「文件存在就跳过」会让 APK 里是旧面板/旧服务端）
 - `FB_LOG_DIR=/tmp/x` 把 WS 日志挪走，避免污染仓库
 - 面板没有热更新，改 `admin/*` 后刷新页面即可；改 `*.ts` 要重启进程
 
@@ -137,5 +160,6 @@ npm run build          # 预编译 build/{server,desktop,portable,mobile}，打�
   需要回调时必须走白名单通道（见维护手册 P0-1 残余风险）
 - **方块状态**：解析与命令已保留 states（楼梯朝向/含水等），回读也带状态；Java 状态属性→基岩状态的翻译仍未做
 - **落块层逐块发 `setblock`**：大结构命令量 = 方块数；合并成 `fill` 会改变与服务器交互的节奏，属于待评估优化
-- 网易版需要自备机器人本体（参考 NTvector），本仓库不含
 - **类型检查已进 CI**：`tsconfig.json` + `npm run typecheck`（strictNullChecks）；但还没有 lint
+- **网易 PC/PE 会话互斥**：同一账号同时拿两套 token 会被判「您的帐号在另一处登录」，所以 PE 通道默认关闭，
+  只有需要 PE 商城接口（组件领取）时才手动开；`purchaseComponentManually()` 的顺序固定为 PC → PE，PE 冲突后 5 分钟内不再重试

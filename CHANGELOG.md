@@ -1,0 +1,76 @@
+# 更新记录
+
+版本号在 `package.json`（`version`）和 `packaging/android/app/build.gradle`（`versionName` / `versionCode`）两处同步。
+0.1.6 之前有 git tag（`v0.1.2` … `v0.1.6`）；之后按功能批次归纳，逐条提交见 GitHub 提交历史。
+
+## 0.1.35
+
+**联机专区组件领取打通（实测 `code=0`，进房拿到地址）**
+
+- 查清 `501 物品还未获得` 的真义：当前凭据对应的 **PE entity** 没有这间房的联机专区商品；联机专区是 PE 商城商品（`channel_id=5`），PC 商城查不到，PC 凭据进同一间房照样 501
+- 「您的帐号在另一处登录」的真因不是手机抢会话，而是**每次 `/pe-authentication` 都会顶掉同账号旧的 PE token**；`session.json` 增 `peTokenAt`，超过 30 分钟先刷新
+- 手动领取流程重写：先查 `/item-channel/...` 的 `buy_state`（已拥有不下单）→ PE 商城 `/pe-purchase-item/` → `code=16` 才换 PC → `502` 按成功处理 → 自动重试一次进房
+- 进房通道改为 **PE 优先**（`enterLobbyRoom`），取地址/退房沿用进房成功的凭据；联机大厅/本地联机启动引擎改用 PE 的 `--UserID/--MD5Token`
+- 撞「另一处登录 / 请先登录」用 sauth 重登一次，同时换新 x19 + PE；PE 登录频控落盘 `auth-cooldown.json`（20 分钟）
+- 面板：登录态恢复后显示「已恢复登录态：uid … / 有效期剩 N 分钟」，不再一律显示「未登录」
+- 新增 [`docs/组件领取排查.md`](docs/组件领取排查.md)：证据链、错误码表、限流坑
+- 测试：123 条（新增 10 条：PE-first 领取、502 幂等、16 换通道、失效即止、通道顺序、`pe_entity_id=0`、PE/PC 501 回退、归属查询）
+
+## 0.1.34
+
+**组件领取改为手动**（进房流程不再发任何购买请求）
+
+- 进房返回 `501 物品还未获得` 时，只报出组件 ID（联机大厅用列表里的 `res_id`，本地联机用服务端回传的 `res_id` 或房间号），不再自动调 `/user-item-purchase` / `/pe-purchase-item/`
+- 面板新增「组件 ID」+「领取组件」：手动触发，顺序为 **PC 商城 → PE 通道**；PE 撞「您的帐号在另一处登录」后 5 分钟内不再空转
+- 联机大厅选中房间时自动把 `res_id` 填进组件 ID
+- 501 之后不再偷偷取地址（旧版会绕过组件直接 `/online-lobby-game-enter`）
+- 测试：113 条（新增「501 不得自动购买」「501 不得偷偷取地址」「手动领取 PC→PE 顺序」）
+
+## 0.1.33
+
+**PE（基岩版）通道登录**
+
+- Go 登录助手新增 `/pe-authentication`：`PeSign` 自制签名 + G79 V12 AES（密钥表、尾部标记字节、响应尾部 128 字节签名区逐字节对齐 VQ 1.6.2）
+- 登录结果新增 `pe_entity_id` / `pe_token` / `pe_error`；`mode:"pe"` 可只换 PE token
+- 登录时把 sauth 另存 `netease-bot/sauth.json`（0600），面板「PE 通道登录」可免密码单独换 PE token
+- `session.json` 升到 v2，导出/导入/重启恢复都带 PE 登录态
+- 面板新增「测试房间」（只解析地址不拉引擎）、`/api/netease-service/probe`
+- 修复 `build-android.mjs` 的缓存 bug：以前只要 `build/mobile` 存在就跳过打包，导致 APK 里是旧面板/旧服务端
+
+## 0.1.27 – 0.1.32
+
+**多格式导入与移动端打磨**
+
+- `.vt`（VQ/Vector 建筑）导入：`VTVB` + AES-256-CBC + HMAC + Deflate，还原方块状态与命令方块内容
+- BDX、ZIP、gzip、Java NBT、`.mcstructure` 统一走文件头识别，`formats.ts` 单一入口
+- 结构导入支持命令方块 `command_update`（网易桥），告示牌文字仍未还原
+- Android：原生引擎补齐 Go 登录助手 `libx19login.so`、事件桥插件同步、保存对话框走 `ACTION_CREATE_DOCUMENT`
+- 面板登录态导出改为弹系统文件选择器（桌面 `showSaveFilePicker`，Android 走原生桥）
+- 图标更新（立体方块 + 织线）
+
+## 0.1.16 – 0.1.26
+
+**网易版登录与本地联机**
+
+- 账号登录链路改为仓库内 Go 助手 `tools/x19login`（设备指纹 + mpay + 短信/上行短信），支持邮箱、手机号、短信、sauth 四种方式
+- 登录态保存 `netease-bot/session.json`（0600），支持导出 / 导入 / 刷新 / 清除
+- 四种进服方式：租赁服、联机大厅、山头服、本地联机
+- **本地联机改为填房间号**（不是 IP）：直接 `/online-lobby-room-enter` → `/online-lobby-game-enter`，房间不会出现在大厅搜索里
+- 房间解析增加冷却：进房 10 秒、组件购买 30 分钟，均持久化到 `netease-bot/*.json`
+- 事件桥改 TCP NDJSON（17999），ECONNREFUSED 只提示一次「事件桥未就绪」
+
+## 0.1.7 – 0.1.15
+
+**账号 + 房间登录、原生引擎与三端产物**
+
+- 面板填网易账号 + 房间号即可登录并启动机器人（不再必须先导 `mc.cfg`）
+- 四种房间类型的 X19 动态签名与地址解析，固定向量单测对齐 VQ 1.6.2
+- Linux / macOS 原生网易引擎（`npm run build:engine`，不再强制 Wine），Windows 仍用 `Program.exe`
+- Android 原生引擎（Chaquopy Python 3.12 + `libcubeloom_engine.so`）与 APK 远程模式
+- GitHub Actions 产出 Windows EXE、Linux AppImage、Android APK
+- `.mcstructure` / `.bdx` / `.litematic` / `.schem` / `.schematic` / `.nbt` / `.mcworld` 导入与损坏修补
+- 结构导入三步流水线：放置 → 回读校验 → 补建；游戏内 HUD 与面板同步进度
+
+## 0.1.2 – 0.1.6
+
+- WS 服务、管理面板、沙箱、voxel 几何、日志与口令体系的最初几版

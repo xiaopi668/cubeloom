@@ -48,6 +48,10 @@ type loginRequest struct {
 	// 恢复登录态（导出/保存的 token）用；兼容字符串/数字两种写法
 	EntityID flexUint64 `json:"entity_id"`
 	Token    string     `json:"token"`
+	// 是否在 x19 登录后补一次 PE 通道认证（缺省开启）
+	Pe *bool `json:"pe"`
+	// EmitSauth 让助手在结果里带回 sauth（Node 侧存起来，之后可单独换 PE token）
+	EmitSauth bool `json:"emit_sauth"`
 }
 
 // flexUint64 接受 JSON 数字或字符串（Node 侧 entity_id 是字符串）。
@@ -138,12 +142,21 @@ func main() {
 		}
 	}
 
-	emit(map[string]any{
-		"event":     "result",
-		"entity_id": session.ID,
-		"token":     session.Token(),
-		"name":      name,
-	})
+	result := map[string]any{
+		"event":        "result",
+		"entity_id":    session.ID,
+		"token":        session.Token(),
+		"name":         name,
+		"pe_entity_id": session.PeEntityID,
+		"pe_token":     session.PeToken,
+		"pe_error":     session.PeError,
+	}
+	if req.EmitSauth {
+		if sauth := session.SauthJSON(); sauth != "" {
+			result["sauth"] = sauth
+		}
+	}
+	emit(result)
 }
 
 func readJSON(ctx context.Context, v any) error {
@@ -167,6 +180,10 @@ func options(req *loginRequest) []neteasex19.Option {
 	}
 	if req.Cache != "" {
 		opts = append(opts, neteasex19.WithDeviceCacheFile(req.Cache))
+		opts = append(opts, neteasex19.WithPeCacheFile(req.Cache))
+	}
+	if req.Pe != nil {
+		opts = append(opts, neteasex19.WithPeLogin(*req.Pe))
 	}
 	if req.Project != "" {
 		opts = append(opts, neteasex19.WithProject(req.Project))
@@ -284,9 +301,28 @@ func run(ctx context.Context, req *loginRequest) (*neteasex19.Session, error) {
 	}
 
 	switch mode {
-	case "email", "phone", "sms", "sauth":
+	case "email", "phone", "sms", "sauth", "pe":
 	default:
 		return nil, fmt.Errorf("未知的登录方式 %q", req.Mode)
+	}
+
+	// 只换 PE 通道 token：用已有的 sauth 走一次 /pe-authentication
+	if mode == "pe" {
+		if strings.TrimSpace(req.Sauth) == "" {
+			return nil, errors.New("PE 认证需要 sauth（重新登录一次账号即可拿到）")
+		}
+		cookie, err := neteasex19.ParseSauthCookie(req.Sauth)
+		if err != nil {
+			return nil, err
+		}
+		pe, err := neteasex19.PeLogin(ctx, cookie, nil, req.Cache)
+		if err != nil {
+			return nil, fmt.Errorf("PE 通道认证失败：%w", err)
+		}
+		session := neteasex19.NewSession(uint64(req.EntityID), req.Token, nil)
+		session.PeEntityID = pe.EntityID
+		session.PeToken = pe.Token
+		return session, nil
 	}
 
 	if mode != "sauth" && strings.TrimSpace(req.Account) == "" {

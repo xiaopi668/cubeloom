@@ -26,12 +26,21 @@ import {
   redactEngineArgs,
   joinRealmsByCode,
   listRealms,
+  resolveLobbyAddress,
   resolveLobbyRoom,
+  peCredential,
+  purchaseComponentManually,
   resolvePeLocalRoom,
   resolveRealmsAddress,
   resolveRentalRoom,
   searchLobbyRooms,
   searchRentalServers,
+  fetchZoneOwnership,
+  isPeSessionStaleError,
+  hasPeSession,
+  isValidPeUserId,
+  type LobbyRoom,
+  type PurchaseOutcome,
 } from "./src/netease-room";
 
 const APP_NAME = "Cubeloom";
@@ -80,6 +89,36 @@ const NETEASE_MC_CFG = path.join(NETEASE_CORE_DIR, "mc.cfg");
 const NETEASE_ACCOUNT_CFG = path.join(NETEASE_BOT_DIR, "account.json");
 /** 保存的登录态（entity_id + token，0600），用于重启后免登录 */
 const NETEASE_SESSION_FILE = path.join(NETEASE_BOT_DIR, "session.json");
+/** 登录时用的 sauth（0600）：只用于换 PE 通道 token，面板不显示、不导出 */
+const NETEASE_SAUTH_FILE = path.join(NETEASE_BOT_DIR, "sauth.json");
+/** 购买限流冷却文件（由 src/netease-room.ts 读写，重启 App 也不重置） */
+process.env.FB_PURCHASE_COOLDOWN_FILE = path.join(NETEASE_BOT_DIR, "purchase-cooldown.json");
+/** 网易“快速匹配过于频繁”的持久冷却（重启 App 也不能绕过去继续打接口） */
+const LOBBY_COOLDOWN_FILE = path.join(NETEASE_BOT_DIR, "lobby-cooldown.json");
+
+function lobbyCooldownLeft(): number {
+  const raw = readJsonFile(LOBBY_COOLDOWN_FILE) || {};
+  const until = Number(raw.until ?? 0) || 0;
+  return Math.max(0, until - Date.now());
+}
+
+function setLobbyCooldown(ms: number): void {
+  try {
+    writeFileAtomic(LOBBY_COOLDOWN_FILE, JSON.stringify({ until: Date.now() + ms, at: Date.now() }, null, 2) + "\n");
+  } catch {}
+}
+
+function clearLobbyCooldown(): void {
+  try {
+    fs.rmSync(LOBBY_COOLDOWN_FILE, { force: true });
+  } catch {}
+}
+
+function noteLobbyRateLimitError(e: any): void {
+  if (/频繁|稍后重试|rate.?limit/i.test(String(e?.message ?? e))) {
+    setLobbyCooldown(10_000);
+  }
+}
 const LOG_DIR = path.join(ROOT, "logs");
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const ADMIN_LOG = path.join(LOG_DIR, "admin.log");
@@ -879,6 +918,10 @@ type AccountCfg = {
   /** 本地联机：房间号（直接进房，不是 IP） */
   localRoom: string;
   localPassword: string;
+  /** 本地联机房间绑定的组件 ID（可选；进房 501 时用它领取） */
+  localResId: string;
+  /** 手动领取用的组件 ID（面板上那一格） */
+  componentId: string;
   lobbyVersion: string;
   displayName: string;
   /** 可选：覆盖引擎版本号 / 协议（默认用 VQ PE 的 3.8.x 与引擎内置协议） */
@@ -886,7 +929,34 @@ type AccountCfg = {
   patchVersion: string;
   protocol: string;
 };
-type X19Cred = { entityId: string; name: string; token: string; at: number; expiresAt: number };
+type X19Cred = {
+  entityId: string;
+  name: string;
+  token: string;
+  /** PE 通道（基岩版）登录态：PE 接口只认它，缺了只能回退 PC token */
+  peEntityId: string;
+  peToken: string;
+  /**
+   * PE token 拿到的时刻。
+   *
+   * 必须记：网易每做一次 `/pe-authentication`，同一账号**之前**的 PE token 立刻失效，
+   * 再用旧的就回「您的帐号在另一处登录」。不记时间就没法判断手里的 token 是不是已经被
+   * 自己下一次登录顶掉了（这正是「领组件一直失败」的根因，见 docs/组件领取排查.md）。
+   */
+  peTokenAt?: number;
+  at: number;
+  expiresAt: number;
+};
+
+/** X19Cred → 接口层凭据（带上 PE 通道 token） */
+function credOf(cred: X19Cred): { userId: string; token: string; peUserId: string; peToken: string } {
+  return {
+    userId: cred.entityId,
+    token: cred.token,
+    peUserId: cred.peEntityId || cred.entityId,
+    peToken: cred.peToken,
+  };
+}
 
 /** token 保守按 6 小时算；过期就让用户重新登录，避免半夜掉线还查不出原因 */
 const X19_TOKEN_TTL = 6 * 3600_000;
@@ -902,6 +972,8 @@ function readAccountCfg(): AccountCfg {
     roomKind: ["lobby", "realms", "local"].includes(String(raw.roomKind ?? "")) ? String(raw.roomKind) : "rental",
     localRoom: String(raw.localRoom ?? raw.localHost ?? ""),
     localPassword: String(raw.localPassword ?? ""),
+    localResId: String(raw.localResId ?? ""),
+    componentId: String(raw.componentId ?? raw.localResId ?? ""),
     lobbyVersion: String(raw.lobbyVersion ?? ""),
     displayName: String(raw.displayName ?? ""),
     engineVersion: String(raw.engineVersion ?? ""),
@@ -934,19 +1006,44 @@ function loginSnapshot() {
     sms: s?.state.sms ?? null,
     notices: s?.state.notices.slice(-20) ?? [],
     expiresAt: x19Cred?.expiresAt ?? 0,
+    /** PE 通道是否就绪（PE 接口只有 PE token 能用） */
+    pe: !!x19Cred && hasPeSession(credOf(x19Cred)),
+    peEntityId: x19Cred?.peEntityId ?? "",
+    /** 手里的 PE token 多少秒前拿的；-1 = 没有。超过 PE_TOKEN_TTL 就该刷新了 */
+    peAgeSec: (() => {
+      if (!x19Cred?.peToken) return -1;
+      const age = peTokenAgeMs();
+      // 没有 peTokenAt（旧版 session.json）时算「很旧」，让前端提示刷新
+      return Number.isFinite(age) ? Math.round(age / 1000) : PE_TOKEN_TTL / 1000;
+    })(),
     saved: !!readSessionFile(),
     binary: !!resolveX19LoginBinary(),
   };
 }
 
-type SavedSession = { v: number; entityId: string; token: string; name: string; savedAt: number; expiresAt: number };
+type SavedSession = {
+  v: number;
+  entityId: string;
+  token: string;
+  name: string;
+  /** PE 通道登录态（没有就留空） */
+  peEntityId?: string;
+  peToken?: string;
+  /** PE token 的取得时间（用来判断是不是已经被下一次 PE 登录顶掉了） */
+  peTokenAt?: number;
+  savedAt: number;
+  expiresAt: number;
+};
 
 function saveSessionFile(cred: X19Cred) {
   const saved: SavedSession = {
-    v: 1,
+    v: 3,
     entityId: cred.entityId,
     token: cred.token,
     name: cred.name,
+    peEntityId: cred.peEntityId || "",
+    peToken: cred.peToken || "",
+    peTokenAt: Number(cred.peTokenAt ?? 0) || 0,
     savedAt: Date.now(),
     expiresAt: cred.expiresAt,
   };
@@ -965,18 +1062,37 @@ function readSessionFile(): SavedSession | null {
   const token = String(raw.token ?? "").trim();
   if (!entityId || !token) return null;
   return {
-    v: 1,
+    v: Number(raw.v ?? 1) || 1,
     entityId,
     token,
     name: String(raw.name ?? ""),
+    peEntityId: String(raw.peEntityId ?? ""),
+    peToken: String(raw.peToken ?? ""),
+    peTokenAt: Number(raw.peTokenAt ?? 0) || 0,
     savedAt: Number(raw.savedAt ?? raw.saved_at ?? 0) || 0,
     expiresAt: Number(raw.expiresAt ?? raw.expires_at ?? 0) || 0,
   };
 }
 
+function saveSauthFile(sauth: string) {
+  const raw = String(sauth ?? "").trim();
+  if (!raw) return;
+  try {
+    writeFileAtomic(NETEASE_SAUTH_FILE, JSON.stringify({ v: 1, sauth: raw, savedAt: Date.now() }, null, 2) + "\n");
+  } catch (e: any) {
+    log(`保存 sauth 失败（PE 通道将无法单独刷新）：${e?.message ?? e}`);
+  }
+}
+
+function readSauthFile(): string {
+  const raw = readJsonFile(NETEASE_SAUTH_FILE) || {};
+  return String(raw.sauth ?? "").trim();
+}
+
 function clearSessionFile() {
   try {
     fs.rmSync(NETEASE_SESSION_FILE, { force: true });
+    fs.rmSync(NETEASE_SAUTH_FILE, { force: true });
   } catch {}
 }
 
@@ -995,6 +1111,9 @@ async function refreshCred(cred: X19Cred): Promise<boolean> {
     entityId: state.entityId || cred.entityId,
     name: state.name || cred.name,
     token: state.token,
+    // 刷新只换 x19 token，PE 通道的登录态沿用上一次登录的结果
+    peEntityId: cred.peEntityId,
+    peToken: cred.peToken,
     at: Date.now(),
     expiresAt: Date.now() + X19_TOKEN_TTL,
   };
@@ -1017,11 +1136,216 @@ async function ensureCred(): Promise<X19Cred> {
 function restoreSavedSession() {
   const saved = readSessionFile();
   if (!saved) return;
-  x19Cred = { entityId: saved.entityId, name: saved.name, token: saved.token, at: saved.savedAt || Date.now(), expiresAt: 0 };
+  const savedAt = saved.savedAt || 0;
+  // 设备时钟错过一次就可能写进离谱的 expiresAt，这里按 savedAt 收口，避免「永不过期」的假象
+  const maxExpiry = (savedAt || Date.now()) + X19_TOKEN_TTL;
+  const rawExpiry = saved.expiresAt || maxExpiry;
+  const expiresAt = Math.min(rawExpiry, maxExpiry + 60_000);
+  x19Cred = {
+    entityId: saved.entityId,
+    name: saved.name,
+    token: saved.token,
+    peEntityId: saved.peEntityId || "",
+    peToken: saved.peToken || "",
+    peTokenAt: saved.peTokenAt || 0,
+    at: savedAt || Date.now(),
+    expiresAt,
+  };
+  // token 还新鲜就别每次启动都刷新：refresh 会把同一账号在别处的会话顶掉
+  if (expiresAt && Date.now() < expiresAt - 10 * 60_000) {
+    const leftMin = Math.max(1, Math.round((expiresAt - Date.now()) / 60_000));
+    log(`使用保存的网易登录态（uid ${saved.entityId}，约剩 ${leftMin} 分钟，暂不刷新）`);
+    return;
+  }
   log(`发现已保存的网易登录态（uid ${saved.entityId}），正在刷新…`);
   refreshCred(x19Cred).then((ok) => {
-    if (!ok) log("保存的登录态暂时刷新失败，可稍后点「刷新登录态」重试，或重新登录");
+    if (!ok) {
+      const stillValid = x19Cred && Date.now() < x19Cred.expiresAt;
+      log(
+        stillValid
+          ? "刷新登录态失败，但保存的 token 还没过期，先继续使用；需要时点「刷新登录态」"
+          : "保存的登录态已过期且刷新失败，请重新登录"
+      );
+    }
   });
+}
+
+/**
+ * PE token 保鲜期。
+ *
+ * 别设太短：`/pe-authentication` 本身有登录频控（实测连续登录十来次就回「操作过于频繁，
+ * 请稍后重试」）。30 分钟 + 撞到「另一处登录」时按需刷新，已经够用，也不至于把自己限流。
+ */
+const PE_TOKEN_TTL = 30 * 60_000;
+/**
+ * 网易登录频控后的冷却（「操作过于频繁」）。
+ *
+ * 必须落盘：网易这个惩罚期实测超过 10 分钟，重启 App 就清掉内存冷却的话，
+ * 下一次点击又会去撞，只会把惩罚期越拖越长。
+ */
+const AUTH_COOLDOWN_FILE = path.join(NETEASE_BOT_DIR, "auth-cooldown.json");
+let authRefreshCooldownUntil = (() => {
+  const raw = readJsonFile(AUTH_COOLDOWN_FILE) || {};
+  return Math.max(0, Number(raw.until ?? 0) || 0);
+})();
+/** 刷新并发去重：同时点两次按钮不该发两次登录请求 */
+let authRefreshPromise: Promise<boolean> | null = null;
+
+/** 手里的 PE token 有多旧（毫秒）；没有 token 时是 Infinity */
+function peTokenAgeMs(): number {
+  const at = Number(x19Cred?.peTokenAt ?? 0) || 0;
+  return at ? Date.now() - at : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * 用保存的 sauth 重新登录一次：**同时**换新的 x19 token 和 PE 通道 token。
+ *
+ * 两个理由：
+ *   1) `/pe-authentication` 每成功一次，同账号之前的 PE token 立刻作废（再用就回
+ *      「您的帐号在另一处登录」），所以「手里有 peToken」不等于「peToken 还能用」；
+ *   2) 实测做 PE 认证会把同一个账号的 x19 会话挤掉——之后 PC 接口一律「请先登录」，
+ *      而且 `mode=refresh` 救不回来（旧 token 已经被服务端丢弃）。sauth 是长期凭据，
+ *      只有它能无密码把两边一起换新，所以统一走这一条路。
+ *
+ * 对应 Go 侧：`neteasex19.LoginBySauth`（VQ 的 MKeyService.PeLoginWithSauthAsync 同源）。
+ */
+/** 记一次登录频控冷却（落盘，重启也生效） */
+function setAuthCooldown(ms: number): void {
+  authRefreshCooldownUntil = Date.now() + ms;
+  try {
+    writeFileAtomic(AUTH_COOLDOWN_FILE, JSON.stringify({ until: authRefreshCooldownUntil, at: Date.now() }, null, 2) + "\n");
+  } catch {}
+}
+
+async function refreshCredsWithSauth(reason: string): Promise<boolean> {
+  if (authRefreshPromise) return authRefreshPromise;
+  const waitLeft = authRefreshCooldownUntil - Date.now();
+  if (waitLeft > 0) {
+    log(`网易登录频控冷却中，还有 ${Math.ceil(waitLeft / 1000)} 秒，先不重登`);
+    return false;
+  }
+  const sauth = readSauthFile();
+  if (!sauth) {
+    log("没有保存 sauth，无法刷新登录态（重新用账号密码登录一次即可拿到）");
+    return false;
+  }
+  log(`用 sauth 重新登录（${reason}）…`);
+  authRefreshPromise = (async () => {
+    const session = new X19LoginSession(
+      { mode: "sauth", sauth, pe: true, emitSauth: true },
+      { onLog: (line) => log(line), timeoutMs: 90_000 }
+    );
+    const state = await session.wait(95_000);
+    if (state.status !== "ok" || !state.token) {
+      const msg = state.error || state.status;
+      if (/频繁|稍后重试|操作过于频繁/.test(msg)) setAuthCooldown(20 * 60_000);
+      log(`sauth 重新登录失败：${msg}`);
+      return false;
+    }
+    // PE 那次登录可能被网易限流（PC 登录仍然有效）：这时**不能**把旧的 PE token 留着当有效，
+    // 否则下一次 PE 请求一定回「您的帐号在另一处登录」，比没有 token 更难排查。
+    const peToken = String(state.peToken || "");
+    // PE 那一步失败时 status 仍然是 ok（PC 登录成功），原因在 pe_error / notices 里。
+    // 这里不挑原因：刚刚重新登录过却拿不到 PE token，基本只有两种可能——网易登录频控，
+    // 或者 PE 侧在维护。两种情况下继续点都只会加深惩罚，所以统一放一段冷却。
+    if (!peToken) {
+      const peMsg = [state.peError, ...(state.notices || [])].join(" ").trim();
+      log(`PE 通道没拿到：${peMsg || "原因未知"}（冷却 20 分钟后再试）`);
+      setAuthCooldown(20 * 60_000);
+    }
+    x19Cred = {
+      entityId: state.entityId || x19Cred?.entityId || "",
+      name: state.name || x19Cred?.name || "",
+      token: state.token,
+      peEntityId: peToken ? state.peEntityId || String(x19Cred?.peEntityId ?? "") : "",
+      peToken,
+      peTokenAt: peToken ? Date.now() : 0,
+      at: Date.now(),
+      expiresAt: Date.now() + X19_TOKEN_TTL,
+    };
+    saveSessionFile(x19Cred);
+    // 这次能登进去说明频控已经解除，清掉落盘的冷却
+    authRefreshCooldownUntil = 0;
+    try {
+      fs.rmSync(AUTH_COOLDOWN_FILE, { force: true });
+    } catch {}
+    log(
+      `登录态已刷新：uid ${x19Cred.entityId}` +
+        (peToken
+          ? `，PE 通道就绪（uid ${x19Cred.peEntityId || x19Cred.entityId}）`
+          : "；PE 通道这次没刷出来（可能被登录频控），需要时再点「PE 通道登录」")
+    );
+    return true;
+  })().finally(() => {
+    authRefreshPromise = null;
+  });
+  return authRefreshPromise;
+}
+
+/**
+ * 做 PE 通道的事之前调一次：没有 PE token / token 太旧就换新的。
+ *
+ * 不这么做的话，第一次 PE 请求一定会死在「另一处登录」上，而购买接口有限流，
+ * 白打一次很亏。
+ */
+async function ensurePeCred(): Promise<void> {
+  if (!x19Cred) return;
+  const usable = !!String(x19Cred.peToken || "").trim() && isValidPeUserId(x19Cred.peEntityId);
+  if (usable && peTokenAgeMs() < PE_TOKEN_TTL) return;
+  // 引擎/机器人在跑的时候不主动刷新：PE token 一换，正在进行的会话可能被踢
+  if (neteaseChild) {
+    log("引擎正在运行，跳过主动刷新 PE 通道（需要时点「PE 通道登录」）");
+    return;
+  }
+  await refreshCredsWithSauth(
+    !String(x19Cred.peToken || "").trim()
+      ? "还没有 PE token"
+      : !isValidPeUserId(x19Cred.peEntityId)
+        ? "PE entity 无效（pe_entity_id=0）"
+        : "PE token 已旧"
+  );
+}
+
+/** 网易的「登录态没了」类报错（x19 被挤掉 / PE token 被顶掉） */
+function isAuthExpiredError(e: unknown): boolean {
+  const msg = String((e as any)?.message ?? e);
+  return /请先登录|未登录|登录态|token.*(失效|无效|过期)|unauthorized/i.test(msg);
+}
+
+/**
+ * 撞到「登录态没了」就刷新一次再重试（同一次操作最多重试一次）：
+ *   - PE token 被顶掉（您的帐号在另一处登录）→ sauth 重登
+ *   - x19 token 被 PE 认证挤掉（请先登录）→ sauth 重登
+ * 重试前那次请求都没有产生订单/房间席位，所以不会重复下单。
+ */
+async function withAuthRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e: any) {
+    const stalePe = isPeSessionStaleError(e);
+    const expired = isAuthExpiredError(e);
+    if (!stalePe && !expired) throw e;
+    // 冷却期里重登只会加深网易的惩罚：直接把「等多久」告诉用户，别再打接口
+    const left = authRefreshCooldownUntil - Date.now();
+    if (left > 0) {
+      throw new Error(
+        `网易要求重新登录（${String(e?.message ?? e)}），但刚才登录被频控过，` +
+          `请 ${Math.max(1, Math.ceil(left / 60_000))} 分钟后再试`
+      );
+    }
+    const ok = await refreshCredsWithSauth(stalePe ? "PE token 被顶掉（另一处登录）" : "登录态被挤掉（请先登录）");
+    if (!ok) throw e;
+    return fn();
+  }
+}
+
+/** 把「请先登录 / token 无效」翻成人话，提示重新登录 */
+function decorateAuthError(e: any): Error {
+  const msg = String(e?.message ?? e);
+  if (/请先登录|未登录|token.*(失效|无效|过期)|login/i.test(msg)) {
+    return new Error(`${msg}（登录态已失效：在面板上重新登录一次网易账号）`);
+  }
+  return e instanceof Error ? e : new Error(msg);
 }
 
 function requireCred(): X19Cred {
@@ -1054,7 +1378,14 @@ function startX19Login(input: any) {
 
   log(`发起网易登录（${mode}${mode === "sms" ? "" : "，账号已脱敏"}）`);
   x19Session = new X19LoginSession(
-    { mode, account, password, sauth: String(input?.sauth ?? "") || undefined },
+    {
+      mode,
+      account,
+      password,
+      sauth: String(input?.sauth ?? "") || undefined,
+      pe: input?.pe === true,
+      emitSauth: true,
+    },
     { onLog: (line) => log(line) }
   );
   x19Session.wait().then((state) => {
@@ -1063,12 +1394,17 @@ function startX19Login(input: any) {
       entityId: state.entityId,
       name: state.name,
       token: state.token,
+      peEntityId: state.peEntityId,
+      peToken: state.peToken,
       at: Date.now(),
       expiresAt: Date.now() + X19_TOKEN_TTL,
     };
     saveAccountCfg({ account });
     saveSessionFile(x19Cred);
+    if (state.sauth) saveSauthFile(state.sauth);
     log(`网易账号已登录：${state.name || "（无昵称）"}（uid ${state.entityId}）`);
+    if (x19Cred.peToken) log(`PE 通道已就绪（uid ${x19Cred.peEntityId || x19Cred.entityId}），可领取联机大厅组件`);
+    else if (state.peError) log(`PE 通道未就绪：${state.peError}`);
   });
   return { ok: true, login: loginSnapshot() };
 }
@@ -1099,6 +1435,30 @@ function logoutX19() {
   return { ok: true };
 }
 
+/**
+ * 领完组件后自动重试一次进房（只取地址，不启动引擎；失败不抛给调用方）。
+ *
+ * 这些接口分属「购买」和「大厅进房」两类，中间停一下，别让网易把两次请求当成连点。
+ */
+async function retryEnterAfterClaim(): Promise<{ ok: boolean; host?: string; port?: string; error?: string }> {
+  const cfg = readAccountCfg();
+  if (cfg.roomKind !== "lobby" && cfg.roomKind !== "local") {
+    return { ok: false, error: "当前房间类型不是联机大厅/本地联机，跳过重试" };
+  }
+  const room = String(cfg.roomKind === "local" ? cfg.localRoom : cfg.room).trim();
+  if (!room) return { ok: false, error: "还没有填房间号，跳过重试" };
+  try {
+    await new Promise((r) => setTimeout(r, 1500));
+    const resolved = await resolveRoomForPanel({});
+    clearLobbyCooldown();
+    log(`领取后重试进房成功：${resolved.host}:${resolved.port}`);
+    return { ok: true, host: resolved.host, port: resolved.port };
+  } catch (e: any) {
+    noteLobbyRateLimitError(e);
+    return { ok: false, error: decorateAuthError(e).message };
+  }
+}
+
 /** 房间号/名称 → 地址（面板上的「测试」和启动都用它） */
 async function resolveRoomForPanel(body: any) {
   const cfg = readAccountCfg();
@@ -1108,6 +1468,19 @@ async function resolveRoomForPanel(body: any) {
   const kind = ["lobby", "realms", "local"].includes(rawKind) ? rawKind : "rental";
 
   const cred = await ensureCred();
+  /**
+   * 联机大厅 / 本地联机默认走 PE 通道。
+   *
+   * 实测（2026-11-15）：同一个网易账号，联机专区商品的归属记在 PE entity 上——
+   * 领取走 PE 商城（channel_id=5），进房也得用 PE 凭据，否则同一间房仍回 501。
+   * `channel=pc` 保留成排查开关（强制用 PC 登录态打大厅接口）。
+   */
+  const channel = String(body?.channel ?? "").trim().toLowerCase();
+  const baseCred = credOf(cred);
+  if (channel !== "pc" && (kind === "lobby" || kind === "local")) await ensurePeCred();
+  // 注意：这里要传「完整凭据」（含 peToken），通道选择交给 resolveLobbyAddress/enterPeRoom
+  const lobbyCred =
+    channel === "pc" ? { userId: baseCred.userId, token: baseCred.token } : baseCred;
 
   if (kind === "local") {
     const room = String(body?.localRoom ?? cfg.localRoom ?? keyword ?? "").trim();
@@ -1115,10 +1488,14 @@ async function resolveRoomForPanel(body: any) {
     const passcode = String(body?.localPassword ?? cfg.localPassword ?? password ?? "");
     let address: Awaited<ReturnType<typeof resolvePeLocalRoom>>;
     try {
-      address = await resolvePeLocalRoom(room, passcode, { userId: cred.entityId, token: cred.token });
+      address = await resolvePeLocalRoom(room, passcode, lobbyCred, {
+        componentId: String(body?.localResId ?? cfg.componentId ?? cfg.localResId ?? ""),
+      });
     } catch (e: any) {
+      noteLobbyRateLimitError(e);
       throw new Error(`本地联机房间号 ${room} 解析失败：${e?.message ?? e}`);
     }
+    clearLobbyCooldown();
     return {
       kind,
       entityId: room,
@@ -1133,7 +1510,7 @@ async function resolveRoomForPanel(body: any) {
 
   if (kind === "realms") {
     if (!keyword) throw new Error("请填写山头服 ID 或邀请码");
-    const address = await resolveRealmsAddress(keyword, { userId: cred.entityId, token: cred.token });
+    const address = await resolveRealmsAddress(keyword, credOf(cred));
     return {
       kind,
       entityId: keyword,
@@ -1147,9 +1524,52 @@ async function resolveRoomForPanel(body: any) {
   }
 
   if (kind === "lobby") {
-    const resolved = await resolveLobbyRoom(keyword, password, { userId: cred.entityId, token: cred.token }, {
-      version: String(body?.lobbyVersion ?? cfg.lobbyVersion ?? "") || undefined,
-    });
+    const cred2 = lobbyCred;
+    // 面板搜索选中后带的是 entityId：直接进房，不再按名字搜索
+    const selectedId = String(body?.roomEntityId ?? "").trim();
+    if (selectedId && (!keyword || keyword === selectedId)) {
+      const room: LobbyRoom = {
+        entityId: selectedId,
+        name: String(body?.roomName ?? selectedId),
+        hasPwd: !!String(password ?? ""),
+        playerCount: 0,
+        maxCount: 0,
+        version: "",
+        lobbyManifestVersion: String(body?.lobbyManifestVersion ?? ""),
+        resId: String(body?.resId ?? ""),
+      };
+      log(
+        `联机大厅直连：${room.name}（${room.entityId}）res_id=${room.resId || "(空，用数字房间号)"}`
+      );
+      let address: Awaited<ReturnType<typeof resolveLobbyAddress>>;
+      try {
+        address = await resolveLobbyAddress(room, password, cred2);
+      } catch (e: any) {
+        noteLobbyRateLimitError(e);
+        throw e;
+      }
+      clearLobbyCooldown();
+      return {
+        kind,
+        entityId: room.entityId,
+        name: room.name,
+        hasPwd: room.hasPwd,
+        playerCount: 0,
+        capacity: 0,
+        host: address.host,
+        port: address.port,
+      };
+    }
+    let resolved: Awaited<ReturnType<typeof resolveLobbyRoom>>;
+    try {
+      resolved = await resolveLobbyRoom(keyword, password, cred2, {
+        version: String(body?.lobbyVersion ?? cfg.lobbyVersion ?? "") || undefined,
+      });
+    } catch (e: any) {
+      noteLobbyRateLimitError(e);
+      throw e;
+    }
+    clearLobbyCooldown();
     return {
       kind,
       entityId: resolved.server.entityId,
@@ -1162,7 +1582,7 @@ async function resolveRoomForPanel(body: any) {
     };
   }
 
-  const resolved = await resolveRentalRoom(keyword, password, { userId: cred.entityId, token: cred.token });
+  const resolved = await resolveRentalRoom(keyword, password, credOf(cred));
   return {
     kind,
     entityId: resolved.server.entityId,
@@ -1238,9 +1658,9 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
   }
   let room: any;
   try {
-    room = await resolveRoomForPanel(body);
+    room = await withAuthRetry(() => resolveRoomForPanel(body));
   } catch (e: any) {
-    return { ok: false, error: e?.message ?? String(e) };
+    return { ok: false, error: decorateAuthError(e).message };
   }
   const cred = requireCred();
   const serverKind =
@@ -1249,13 +1669,25 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
       : room.kind === "realms"
         ? "DomainGame"
         : "RentalGame";
+  /**
+   * 启动引擎用哪套账号。
+   *
+   * 联机大厅/本地联机走 PE 通道，所以 `--UserID/--MD5Token` 也必须是 PE 的 entity + token：
+   * VQ 的 PE 模式就是这么做的（`MKeyService.PeLoginWithSauthAsync` 把 `Account` 整体换成
+   * PE 账号，`LaunchProgram` 再从 `Account` 取 UserID/Token，并加 `--g79`）。
+   * 租赁服/山头服仍用 PC 登录态（它们本来就是 x19 那套接口）。
+   */
+  const launchCred =
+    (room.kind === "lobby" || room.kind === "local") && hasPeSession(credOf(cred))
+      ? peCredential(credOf(cred))
+      : { userId: cred.entityId, token: cred.token };
   let argv: string[];
   try {
     argv = [
       engineExe(),
       ...buildEngineArgs({
-        userId: cred.entityId,
-        token: cred.token,
+        userId: launchCred.userId,
+        token: launchCred.token,
         entityId: room.entityId,
         serverKind,
         host: room.host,
@@ -1521,6 +1953,7 @@ const server = createServer(async (req, res) => {
   try {
     const blocked = requestGuard(req);
     if (blocked) return sendJson(res, blocked.status, { ok: false, error: blocked.error });
+
     // ---- 登录校验（admin/auth.json 存在时启用；口令只存 scrypt 哈希） ----
     if (auth) {
       const authed = isValidSession(readCookie(req, "cq_session"));
@@ -1894,9 +2327,9 @@ const server = createServer(async (req, res) => {
         if (action === "join") {
           const code = String(body?.code ?? "").trim();
           if (!code) return sendJson(res, 200, { ok: false, error: "请填写邀请码" });
-          await joinRealmsByCode(code, { userId: cred.entityId, token: cred.token });
+          await joinRealmsByCode(code, credOf(cred));
         }
-        const realms = await listRealms({ userId: cred.entityId, token: cred.token });
+        const realms = await listRealms(credOf(cred));
         return sendJson(res, 200, { ok: true, realms });
       } catch (e: any) {
         return sendJson(res, 200, { ok: false, error: e?.message ?? String(e) });
@@ -1976,9 +2409,11 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 200, {
         ok: true,
         session: {
-          v: 1,
+          v: 2,
           entity_id: x19Cred.entityId,
           token: x19Cred.token,
+          pe_entity_id: x19Cred.peEntityId || "",
+          pe_token: x19Cred.peToken || "",
           name: x19Cred.name,
           saved_at: Date.now(),
         },
@@ -1998,6 +2433,8 @@ const server = createServer(async (req, res) => {
         entityId,
         token,
         name: String(raw?.name ?? ""),
+        peEntityId: String(raw?.pe_entity_id ?? raw?.peEntityId ?? ""),
+        peToken: String(raw?.pe_token ?? raw?.peToken ?? ""),
         at: Date.now(),
         expiresAt: 0,
       };
@@ -2019,6 +2456,31 @@ const server = createServer(async (req, res) => {
       if (!x19Cred) return sendJson(res, 200, { ok: false, error: "当前没有登录态" });
       const ok = await refreshCred(x19Cred);
       return sendJson(res, 200, ok ? { ok: true, login: loginSnapshot() } : { ok: false, error: "刷新失败，请重新登录" });
+    }
+
+    // 单独换一次 PE 通道 token（用登录时存下的 sauth，不需要再输密码）
+    if (p === "/api/netease-service/session/pe" && req.method === "POST") {
+      if (!x19Cred) return sendJson(res, 200, { ok: false, error: "当前没有登录态" });
+      if (!readSauthFile()) {
+        return sendJson(res, 200, {
+          ok: false,
+          error: "本机没有保存 sauth（旧版本登录的登录态），请重新用账号密码登录一次，之后就能单独刷新 PE 通道",
+        });
+      }
+      const before = !!x19Cred && hasPeSession(credOf(x19Cred));
+      const ok = await refreshCredsWithSauth("面板手动刷新 PE/登录态");
+      const ready = !!x19Cred && hasPeSession(credOf(x19Cred));
+      if (ready) return sendJson(res, 200, { ok: true, login: loginSnapshot() });
+      const left = Math.max(1, Math.ceil((authRefreshCooldownUntil - Date.now()) / 60_000));
+      return sendJson(res, 200, {
+        ok: false,
+        error: ok
+          ? `x19 登录态已刷新，但 PE 通道这次没拿到（网易登录频控：操作过于频繁）${left > 0 ? `，建议 ${left} 分钟后再点` : ""}`
+          : before
+            ? "PE 通道刷新失败，稍后再试；x19 登录态仍可用"
+            : "PE 通道认证失败，请重新登录一次",
+        login: loginSnapshot(),
+      });
     }
 
     // ---- 网易版：账号登录 / 房间解析（必须在反代之前）----
@@ -2074,6 +2536,93 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 200, logoutX19());
     }
 
+    /**
+     * 手动领取联机专区组件。
+     *
+     * 只有用户点「领取组件」才会走到这里——进房流程**不会**自动领取（这是产品决定，
+     * 领错/领重复由用户自己判断）。一次点击最多产生一个购买请求：
+     *   1) 先查 item-channel 的 buy_state（已拥有就不下单，购买接口有限流）；
+     *   2) 购买走 PE 商城；PE token 失效（「另一处登录」）时刷新一次再重试；
+     *   3) 领完可选地自动重试一次进房，成功则把 host:port 一起返回，但不会再发购买请求。
+     */
+    if (p === "/api/netease-service/purchase" && req.method === "POST") {
+      const body = await readJson(req);
+      const itemId = String(body?.itemId ?? "").trim();
+      if (!itemId) return sendJson(res, 200, { ok: false, error: "请填写组件 ID" });
+      try {
+        await ensureCred();
+        // PE 通道保鲜：保证第一次购买请求不是死在过期 token 上（那会白烧一次限流额度）
+        await ensurePeCred();
+
+        // 联机专区是 PE 商城商品：PE 不可用时只能走 PC（一定「目标找不到」），
+        // 所以先尽力把 PE 通道刷出来，失败时在报错里说清楚原因。
+        if (!hasPeSession(credOf(requireCred()))) {
+          await refreshCredsWithSauth("领取联机专区组件需要 PE 通道");
+        }
+
+        let alreadyOwned = false;
+        try {
+          const owned = await withAuthRetry(() => fetchZoneOwnership([itemId], credOf(requireCred())));
+          alreadyOwned = owned.get(itemId) === true;
+        } catch (e: any) {
+          if (isPeSessionStaleError(e)) throw e;
+          // 查不到归属不影响领取，继续走购买
+          log(`查询组件归属失败（继续领取）：${String(e?.message ?? e)}`);
+        }
+
+        let outcome: PurchaseOutcome | null = null;
+        if (alreadyOwned) {
+          log(`组件 ${itemId} 本账号已经拥有，跳过购买请求`);
+        } else {
+          // withAuthRetry 的重试发生在「登录态失效」这一步——那时服务端没有产生订单，
+          // 所以重试不会重复下单
+          outcome = await withAuthRetry(() => purchaseComponentManually(itemId, credOf(requireCred())));
+          alreadyOwned = alreadyOwned || outcome.alreadyOwned;
+          log(
+            `已手动领取组件：${itemId}（${outcome.channel === "pe" ? "PE 商城" : "PC 商城"}` +
+              `${outcome.alreadyOwned ? "，之前已拥有" : ""}）`
+          );
+        }
+        if (String(body?.remember ?? "") !== "no") saveAccountCfg({ componentId: itemId });
+
+        // 领完自动重试一次进房（默认开，retryEnter:false 可关）：只重试一次，不再发购买请求
+        const retry = body?.retryEnter === false ? null : await retryEnterAfterClaim();
+        return sendJson(res, 200, {
+          ok: true,
+          itemId,
+          channel: outcome?.channel || (alreadyOwned ? "pe" : ""),
+          alreadyOwned,
+          retry,
+        });
+      } catch (e: any) {
+        const msg = decorateAuthError(e).message;
+        // 没拿到 PE 通道时补一句原因（否则「PC 商城目标找不到」会把人带偏）
+        const needPe = !!x19Cred && !hasPeSession(credOf(x19Cred)) && !/PE 通道/.test(msg);
+        return sendJson(res, 200, {
+          ok: false,
+          error: needPe
+            ? `${msg}（联机专区是 PE 商城商品，本次 PE 通道不可用：网易登录频控「操作过于频繁」，` +
+              "通常要等 20 分钟以上再点一次「领取组件」，或去「登录态」一栏点「PE 通道登录」）"
+            : msg,
+        });
+      }
+    }
+
+    // 只解析房间地址，不启动引擎：面板上的「测试房间」用它，排查 501/地址问题很省事
+    if (p === "/api/netease-service/probe" && req.method === "POST") {
+      const body = await readJson(req);
+      try {
+        await ensureCred();
+        const room = await withAuthRetry(() => resolveRoomForPanel(body));
+        clearLobbyCooldown();
+        return sendJson(res, 200, { ok: true, room, login: loginSnapshot() });
+      } catch (e: any) {
+        noteLobbyRateLimitError(e);
+        const err = decorateAuthError(e);
+        return sendJson(res, 200, { ok: false, error: err.message, login: loginSnapshot() });
+      }
+    }
+
     if (p === "/api/netease-service/rooms" && req.method === "POST") {
       const body = await readJson(req);
       try {
@@ -2084,10 +2633,10 @@ const server = createServer(async (req, res) => {
         const kind = String(body?.roomKind ?? "") === "lobby" ? "lobby" : "rental";
         if (kind === "lobby") {
           const cfg = readAccountCfg();
-          const list = await searchLobbyRooms(
-            keyword,
-            { userId: cred.entityId, token: cred.token },
-            { version: String(body?.lobbyVersion ?? cfg.lobbyVersion ?? "") || undefined }
+          const list = await withAuthRetry(() =>
+            searchLobbyRooms(keyword, credOf(cred), {
+              version: String(body?.lobbyVersion ?? cfg.lobbyVersion ?? "") || undefined,
+            })
           );
           return sendJson(res, 200, {
             ok: true,
@@ -2097,10 +2646,12 @@ const server = createServer(async (req, res) => {
               hasPwd: r.hasPwd,
               playerCount: r.playerCount,
               capacity: r.maxCount,
+              lobbyManifestVersion: r.lobbyManifestVersion,
+              resId: r.resId,
             })),
           });
         }
-        const rooms = await searchRentalServers(keyword, { userId: cred.entityId, token: cred.token });
+        const rooms = await searchRentalServers(keyword, credOf(cred));
         return sendJson(res, 200, { ok: true, rooms });
       } catch (e: any) {
         return sendJson(res, 200, { ok: false, error: e?.message ?? String(e) });

@@ -49,7 +49,7 @@ export function isMainlandPhone(s: string): boolean {
   return /^1\d{10}$/.test(String(s ?? "").trim());
 }
 
-export type X19LoginMode = "email" | "phone" | "sms" | "sauth" | "refresh";
+export type X19LoginMode = "email" | "phone" | "sms" | "sauth" | "refresh" | "pe";
 
 export type X19LoginRequest = {
   mode?: X19LoginMode;
@@ -63,6 +63,10 @@ export type X19LoginRequest = {
   gv?: string;
   /** 设备指纹缓存路径；默认放在用户目录，跨启动复用，降低风控概率 */
   cache?: string;
+  /** 是否在 x19 登录后再做一次 PE（基岩版）通道认证，默认 true */
+  pe?: boolean;
+  /** 让助手在结果里带回 sauth（Node 侧保存后可以单独换 PE token） */
+  emitSauth?: boolean;
 };
 
 export type X19LoginStatus =
@@ -79,6 +83,14 @@ export type X19LoginState = {
   entityId: string;
   name: string;
   token: string;
+  /** PE 通道（基岩版）entity_id；PE 接口只认它 */
+  peEntityId: string;
+  /** PE 通道 token；为空表示只拿到 PC 登录态 */
+  peToken: string;
+  /** PE 通道认证失败原因（PC token 仍然可用） */
+  peError: string;
+  /** 登录时用的 sauth（只在 emitSauth 时回传，不显示在面板上） */
+  sauth: string;
   error: string;
   notices: string[];
   sms: { phone: string; upstream: boolean; number: string; content: string; hint: string } | null;
@@ -152,6 +164,10 @@ export class X19LoginSession {
       entityId: "",
       name: "",
       token: "",
+      peEntityId: "",
+      peToken: "",
+      peError: "",
+      sauth: "",
       error: "",
       notices: [],
       sms: null,
@@ -178,6 +194,10 @@ export class X19LoginSession {
     if (request.entityId) {
       payload.entity_id = request.entityId;
       delete payload.entityId;
+    }
+    if (request.emitSauth) {
+      payload.emit_sauth = true;
+      delete payload.emitSauth;
     }
     this.log(`启动登录助手：${bin}`);
     let child: ChildProcessWithoutNullStreams;
@@ -280,6 +300,10 @@ export class X19LoginSession {
         this.state.status = "ok";
         this.state.token = token;
         this.state.entityId = String(msg.entity_id ?? "");
+        this.state.peEntityId = String(msg.pe_entity_id ?? "");
+        this.state.peToken = String(msg.pe_token ?? "");
+        this.state.peError = String(msg.pe_error ?? "");
+        this.state.sauth = String(msg.sauth ?? "");
         this.state.name = String(msg.name ?? "");
         this.state.sms = null;
         this.settle();

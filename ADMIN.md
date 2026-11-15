@@ -16,7 +16,7 @@ Minecraft 基岩版 WebSocket 结构生成器 + 黑白配色网页后台。
 
 ## 游戏里怎么连
 
-```
+```国际基岩版
 /connect ws://127.0.0.1:11451
 ```
 
@@ -49,14 +49,21 @@ Minecraft 基岩版 WebSocket 结构生成器 + 黑白配色网页后台。
 | 默认方块 | 改 `setting.block`，之后所有 `plot()` 都用这个方块 |
 | 服务启停 | 启动 / 停止 / 重启 WS 服务 |
 | 连接地址 | 一键复制 `/connect ws://127.0.0.1:11451` |
+| 结构导入 | 多格式：`.mcstructure` / `.bdx` / `.vt` / `.litematic` / `.schem` / `.schematic` / `.nbt`，`.mcworld` / `.zip` 自动取包内结构；可修补损坏文件 |
+| 图片导入 / 像素字 | 图片或文字 → 方块画 |
+| 网易版 | 账号登录（x19 + 可选 PE 通道）、四种房间（租赁服/联机大厅/山头服/本地联机）、测试房间、组件手动领取、机器人启停 |
+| 任务队列 | 命令 / 等待 / 结构导入 顺序执行 |
+| 快捷操作 | 球 / 圆盘 / 墙 / 清空等预设 |
 
 ## 端口
 
 | 端口 | 用途 | 绑定 |
 | --- | --- | --- |
 | 11451 | WS 服务（游戏连） | 所有网卡 |
-| 11452 | 网页管理端 | 仅本机 127.0.0.1 |
+| 11452 | 网页管理端 | 仅本机 127.0.0.1（局域网访问需显式开启） |
 | 11453 | 本机控制接口（管理端内部调用） | 仅本机 127.0.0.1 |
+| 11454 | 网易版导入服务 `netease-service.ts` | 仅本机 127.0.0.1（`FB_NETEASE_PORT`） |
+| 17999 | 机器人事件桥 TCP（`cubeloom_bridge`） | 仅本机 127.0.0.1（`FB_NETEASE_SOCKET`） |
 
 ## 环境变量
 
@@ -71,6 +78,14 @@ Minecraft 基岩版 WebSocket 结构生成器 + 黑白配色网页后台。
 | `FB_CONTROL_PORT` | 11453 | 控制接口端口 |
 | `FB_WS_VERSION` | 17104896 | WebSocket 协议版本（1.5.0）。换成更老的客户端（如网易版 1.21.1）握手失败时可调 |
 | `FB_NO_OPEN` | 空 | 设为 `1` 则不自动打开浏览器 |
+| `FB_NETEASE_PORT` | 11454 | 网易版导入服务端口 |
+| `FB_NETEASE_SOCKET` | `tcp://127.0.0.1:17999` | 机器人事件桥地址 |
+| `FB_NETEASE_TOKEN` | 自动生成 | 事件桥 token（`npm run setup:netease-bot` 生成） |
+| `FB_NETEASE_BOT_DIR` | `<root>/netease-bot` | 引擎/配置/登录态目录 |
+| `FB_NETEASE_RATE` | 5 | 向网易服下发指令的限速（条/秒） |
+| `FB_NETEASE_PROTOCOL` | 898 | 覆盖协议号（默认 MCBE 1.21.130） |
+| `FB_X19LOGIN` | 自动查找 | 指定 Go 登录助手路径（Android 侧是 `libx19login.so`） |
+| `FB_PURCHASE_COOLDOWN_FILE` | `netease-bot/purchase-cooldown.json` | 组件购买限流冷却文件 |
 
 ## 说明
 
@@ -158,24 +173,25 @@ systemctl restart cubeloom
 
 > 原理：`--stop` 是给游戏发 `closewebsocket` 命令，优雅关闭 WebSocket 连接；服务端会记录断开并清理会话。
 
-## 导入 .mcstructure 结构
+## 导入结构（多格式）
 
-后台管理页新增「导入结构（.mcstructure）」面板：
+「结构导入」页支持按**文件头自动识别**格式（不依赖扩展名），完整格式表见下文「投影文件导入」：
 
-1. 选择由结构方块导出的 `.mcstructure` 文件（未压缩的 little-endian NBT）
-2. 点「上传并解析」→ 显示尺寸 / 方块数 / 调色板种类
+1. 选文件（`.mcstructure` / `.bdx` / `.vt` / `.litematic` / `.schem` / `.schematic` / `.nbt`，或含这些文件的 `.mcworld` / `.zip`）
+2. 点「上传并解析」→ 显示尺寸 / 方块数 / 调色板种类 / 识别到的格式
 3. 游戏里先发 `-pos()` 把放置原点设在脚下，再设 Y 偏移（默认 0）
-4. 点「开始生成」→ 逐批放置方块
-5. 进度同时显示在两处：**网页进度条** + **游戏内物品栏上方字符进度条**（`titleraw @s actionbar`，例如 `导入「house」 [########------------] 43% 1240/2880`）
+4. 点「开始生成」→ 三步流水线（放置 → 校验 → 补建，见下文）
+5. 进度同时显示在**网页进度条**和**游戏内 actionbar**（`titleraw @s actionbar`，例如 `导入「house」 [########------------] 43% 1240/2880`）
 6. 过程中可点「取消」中止
 
 实现说明：
 
-- 按格式规范解析 `block_indices`（ZYX 顺序，z 变化最快），忽略 `air` 与 `-1` 空位
+- `.mcstructure` 按 `block_indices`（ZYX 顺序，z 变化最快）解析，忽略 `air` 与 `-1` 空位
+- `.mcstructure` / `.bdx` / `.vt` 会还原方块状态；`.schem` / `.litematic` 等 Java 投影只还原方块 ID
+- `.vt` 用 `VTVB` + AES-256-CBC + Deflate；命令方块内容通过网易桥 `command_update` 补写，告示牌文字暂未还原
 - 沿 z 轴把连续同方块合并成 `fill` 命令，命令数大幅减少（例：156 方块 → 58 条命令）
-- 每批 60 条命令、间隔 40ms，避免刷屏卡顿；每 250ms 更新一次 actionbar 进度
-- 暂不支持方块状态（朝向/半砖等）与方块实体（箱子内容、告示牌文字）
-- 单次上限 50 万方块（超大结构会很慢，64×64×64=26 万方块约 4096 条 fill 命令）；上传文件上限约 64MB
+- 每批 60 条命令、间隔 40ms；每 250ms 更新一次 actionbar 进度
+- 单次上限 50 万方块（64×64×64=26 万方块约 4096 条 fill 命令）；上传文件上限约 64MB
 
 ## 游戏与玩家信息面板
 
@@ -267,41 +283,102 @@ systemctl restart cubeloom
 
 后台面板同步显示当前步骤（`导入中（步骤 2/3 完整性校验）：…`）和结果；状态接口字段：`build.step / build.stepLabel`、`structure.verify`。手动「完整性检查 / 深度检查」按钮仍可随时再查。
 
-## 网易版（基岩互通服 / 租赁服）
+## 网易版（租赁服 / 联机大厅 / 山头服 / 本地联机）
 
-WebSocket 版需要游戏客户端能 `/connect`；网易版走不了这条路，改用**机器人进服 + 事件桥**：
+WebSocket 版需要客户端能 `/connect`；网易版走不了这条路，改用**机器人进服 + 事件桥**：
+Cubeloom 把算好的原版指令通过 TCP 事件桥交给 NTvector 机器人，由机器人以玩家身份在服务器里执行。
 
 ### 组成
 
 | 组件 | 位置 | 说明 |
 | --- | --- | --- |
-| 网易机器人客户端 | `/opt/netease-bot` | `main.py` + `libclient.so`，用账号 Cookie 登录、RakNet 进租赁服，暴露 UNIX 套接字事件桥 |
-| 网易版导入服务 | `/opt/cubeloom/netease-service.ts` | 连事件桥，把结构导入/校验/补建搬到网易服（systemd：`cubeloom-netease`） |
-| 后台面板 | 管理页「网易版（机器人 · 事件桥）」 | 显示机器人名称/坐标/在线人数，选择结构文件 → 在网易服里导入 → 自动校验 |
+| 机器人引擎 | `netease-bot/ntvector/`（Windows）/ `netease-bot/ntvector-native/`（Linux/macOS）/ APK 内置 `libcubeloom_engine.so` | NTvector + Cubeloom 桥插件 `cubeloom_bridge`，`npm run setup:netease-bot` 解压 |
+| 事件桥 | `127.0.0.1:17999`（TCP，NDJSON） | 桥插件监听；`netease-service.ts` 连它下指令、收事件 |
+| 导入服务 | `netease-service.ts`（11454） | 结构导入三步流水线、限速、重连、进度上报 |
+| 网易账号登录 | `tools/x19login`（Go，零第三方依赖） | 设备指纹 + mpay 登录 → `entity_id + token`；可选 PE（基岩版）通道 |
+| 后台面板 | 管理页「网易版」 | 登录 / 房间 / 测试房间 / 领取组件 / 机器人启停 / 实时日志 |
+
+### 账号与房间
+
+1. 账号卡片填 **网易邮箱 / 手机号 + 密码** →「登录」（风控要求时按提示填短信验证码或发上行短信）；
+   登录成功后 token 存 `netease-bot/session.json`（0600），重启自动恢复。
+2. 选房间类型：
+
+| 类型 | 填什么 | 说明 |
+| --- | --- | --- |
+| 租赁服 | 房间号 / 房间名（可搜索）、密码 | `RentalGame` + `/rental-server-*`；账号需要是该服 OP 或服务器开作弊 |
+| 联机大厅 | 房间号 / 房间名（可搜索）、密码 | `LobbyGame` + `/online-lobby-*`；搜到房间后列表里的 `res_id` 就是组件 ID |
+| 山头服 | 从「刷新山头服列表」里选，或填 sid；邀请码可先加入 | `DomainGame` + `/domain-server-*` |
+| 本地联机 | **4–8 位房间号**（不是 IP）、密码 | 直接 `/online-lobby-room-enter` → `/online-lobby-game-enter`，房间不会出现在大厅搜索里 |
+
+3. 点 **「测试房间」** 只解析地址不启动引擎（排错首选）；点 **「启动机器人 + 网易服务」** 才会拉起引擎。
+
+### 联机专区组件（`501 物品还未获得`）
+
+带模组的房间进房会回 `501`。它的含义是**当前凭据对应的账号（PE entity）没有这间房绑定的联机专区商品**：联机专区是 **PE 商城商品**（`channel_id=5`），归属记在 PE entity 上，PC 商城查不到（回 `目标找不到`），PC 凭据进同一间房也照样 501。
+
+Cubeloom **不会自动购买**，只把组件 ID 报出来：
+
+```
+联机大厅房间「72563」绑了联机专区组件（网易回 501：物品还未获得），组件 ID：4659475350398889607。
+要进这个房间，先在面板点「领取组件」（联机专区是 PE 商城商品，必须走 PE 通道领取；领取后会自动重试一次进房）
+```
+
+点 **「领取组件」** 之后依次做三件事（一次点击最多产生一个购买请求）：
+
+1. 查 `/item-channel/query/search-item-channel-list-by-id`（`channel_id=5`）的 `buy_state`，**已经拥有就跳过下单**；
+2. 走 PE 商城 `/pe-purchase-item/`（`g79mclobt.minecraft.cn`，`item_id` 必须是 JSON 字符串）；PE 回 `code=16 目标找不到` 才换 PC 商城；`502 物品已经获得` 按成功处理；
+3. 自动重试**一次**进房，成功就把 `host:port` 显示出来。
+
+PE token 相关：
+
+- 每次 `/pe-authentication` 成功，同账号**之前**的 PE token 立即作废，再用就回 `您的帐号在另一处登录`（不是手机抢会话）；
+- `session.json` 里记 `peTokenAt`，超过 30 分钟先刷新；撞上「另一处登录」会用 sauth 重登一次（同时换新 x19 + PE）再重试一次；
+- PE 登录有频控，失败后 `auth-cooldown.json` 记 20 分钟冷却，重启也不重置；引擎运行期间不主动刷新。
+
+> 账号卡片的 `同时登录 PE 通道` 默认关闭；联机大厅/本地联机需要 PE 时会自动用 sauth 补一次。
+> 手动兜底：点「PE 通道登录」。
 
 ### 使用
 
-1. 机器人进服成功后，后台面板会显示「事件桥已连接 · 机器人 xxx」
-2. 选择 `.mcstructure` → 上传并解析 → 「在网易服里导入」
-3. 导入会执行三步：
-   - **1/3 放置方块**：按 `FB_NETEASE_RATE`（默认 5 条/秒）限速下发 `setblock`/`fill`
-   - **2/3 完整性校验**：对表面抽样点逐个发**幂等 setblock**（已在 = `noChange` 通过；缺失 = 直接补上）
-   - **3/3 完成**：报告通过/失败数量
-4. 进度看后台进度条 + 游戏内物品栏（发给 `@a`）
+1. 「结构导入」页选文件（`.mcstructure` / `.bdx` / `.vt` / `.litematic` / `.schem` / `.schematic` / `.nbt`，或含这些文件的 `.mcworld` / `.zip`）→ 上传解析；
+2. 「在网易服里导入」，自动跑三步：
+   - **1/3 放置方块**：按 `FB_NETEASE_RATE`（默认 5 条/秒）限速下发 `setblock` / `fill`
+   - **2/3 完整性校验**：对表面抽样点发**幂等 setblock**（已在 = `noChange` 通过，缺失的直接补）
+   - **3/3 完成**：报告通过 / 失败数量，进度同步到面板与游戏内 actionbar
+3. `.vt` 的命令方块内容会通过桥的 `command_update` 补写（更新前先 `/tp` 到附近）；告示牌文字暂未还原。
+4. 联机大厅 / 本地联机启动引擎时用 PE 的 `--UserID/--MD5Token`（`--g79` 已开），租赁服 / 山头服用 PC 登录态。
 
 ### 关键限制（实测）
 
-- 机器人账号必须是该服务器的 **OP**（或服务器开启作弊），否则指令无效
-- **不要用 	estforblock 做回读**：网易服会判 `bad_packet`（reason=90）踢线；本实现用幂等 `setblock` 回执确认
-- 指令必须限速，突发大量指令会被判 `违规游戏行为`（reason=55）踢线；默认 5 条/秒，可用环境变量 `FB_NETEASE_RATE` 调
-- 机器人被踢后会自动重连（60 秒），重连后事件桥自动恢复
-- 64×64×64 这类 26 万方块的结构按 5 条/秒约需 15 分钟；建议先用小结构确认原点/方向
+- 机器人账号必须是该服务器 **OP**（或服务器开启作弊），否则指令无效
+- **不要用 `testforblock` 做回读**：网易服会判 `bad_packet`（reason=90）踢线，所以校验用幂等 `setblock` 的回执
+- 指令必须限速：突发大量指令会被判「违规游戏行为」（reason=55）踢线；默认 5 条/秒，`FB_NETEASE_RATE` 可调
+- 被踢后约 60 秒自动重连，重连后事件桥自动恢复
+- 64×64×64（约 26 万方块）按 5 条/秒约 15 分钟；先用小结构确认原点和朝向
+- 进房冷却 10 秒、组件购买冷却 30 分钟都持久化在 `netease-bot/*.json`，重启不重置
 
-### 配置（服务器）
+### 平台支持
 
-- `/opt/cubeloom/netease.env`（`chmod 600`）：`FB_NETEASE_SOCKET` / `FB_NETEASE_TOKEN`
-- `/opt/netease-bot/config.json`（`chmod 600`）：房间号/密码/账号 Cookie/密钥包（**凭据，严禁外传**）
-- 启停：`systemctl restart cubeloom-netease`（机器人本身是 `/opt/netease-bot` 下的独立进程）
+| 平台 | 引擎 | 登录助手 | 说明 |
+| --- | --- | --- | --- |
+| Windows | 原生 `Program.exe` | `x19login.exe` | 安装包内置 |
+| Linux | 原生 `Program`（`npm run build:engine`） | `x19login` | 未构建时回退 Wine |
+| macOS | 原生 `Program` | `x19login` | 未构建时回退 Wine / CrossOver |
+| Android | 原生 `libcubeloom_engine.so` + Chaquopy Python 3.12 | `libx19login.so` | APK 内置；也可用远程模式当遥控器 |
+
+### 常见问题
+
+| 现象 | 处理 |
+| --- | --- |
+| 提示「缺少登录助手」 | 跑 `npm run build:x19login`；打包版应自带 `server/x19login[.exe]` |
+| `登录态已失效：请先登录` | 面板重新登录，或「导入登录态」 |
+| `您的帐号在另一处登录` | 同账号 PC/PE 会话互斥：取消勾选 PE 通道，或先退出手机上的游戏 |
+| `操作过于频繁` | 网易登录频控：等 20 分钟（`netease-bot/auth-cooldown.json`） |
+| `购买太频繁` | 组件购买冷却 30 分钟（`netease-bot/purchase-cooldown.json`） |
+| `物品已经获得`（`code=502`） | 组件本来就在你名下，按成功处理 |
+| 房间搜不到 / `无法找到该房间` | 房间号要完整；房间可能已关闭 |
+| 引擎起不来 | 确认 `npm run setup:netease-bot` 解压过引擎；Linux/macOS 需 `npm run build:engine` 或装 Wine |
 
 ## 投影文件导入（.mcstructure / .bdx / .vt / .litematic / .schem / .schematic / .nbt）
 

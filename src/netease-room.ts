@@ -11,12 +11,45 @@
  * 见 src/netease-account.ts。本模块不碰密码。
  */
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 /** 网易登录态：entity_id（界面上的 user_id）+ token */
 export type X19Credential = {
   userId: string;
   token: string;
+  /**
+   * PE 通道登录态（基岩版）。
+   *
+   * g79 的 PE 接口（`/pe-purchase-item/`、`/pe-user-item-purchase`）只认 PE 通道的
+   * entity_id + token，拿 PC 的 x19 token 去调只会回「参数错误」，所以要单独带一份。
+   */
+  peUserId?: string;
+  peToken?: string;
 };
+
+/**
+ * PE entity id 是否可用。
+ *
+ * `"0"` / 空都要当成「没有」：PE 认证失败时 Go 助手会回 `pe_entity_id: 0`，
+ * 这种半套凭据配着 PE token 去打接口，只会得到「参数错误」或「另一处登录」。
+ */
+export function isValidPeUserId(peUserId: string | undefined): boolean {
+  const v = String(peUserId ?? "").trim();
+  return !!v && v !== "0" && /^\d+$/.test(v);
+}
+
+/** 这个凭据是不是一套可用的 PE 登录态（PE entity + PE token 都在） */
+export function hasPeSession(cred: X19Credential): boolean {
+  return !!String(cred.peToken || "").trim() && isValidPeUserId(cred.peUserId);
+}
+
+/** 取 PE 通道的登录态：没有 PE token（或 PE entity 无效）时退回 PC 的（老账号/未做 PE 认证） */
+export function peCredential(cred: X19Credential): X19Credential {
+  const token = String(cred.peToken || "").trim();
+  if (!token || !isValidPeUserId(cred.peUserId)) return { userId: cred.userId, token: cred.token };
+  return { userId: String(cred.peUserId).trim(), token };
+}
 
 export type RentalServer = {
   entityId: string;
@@ -50,6 +83,40 @@ export class X19ApiError extends Error {
 
 const RENTAL_HOST = "https://g79mclobt.minecraft.cn";
 const NETEASE_SALT = "0eGsBkhl";
+
+/**
+ * PE 通道 token 失效。
+ *
+ * 实测（2026-11 / 网易 g79）：`/pe-authentication` 每成功一次，同一账号之前拿到的 PE
+ * token 立刻作废，再用旧 token 打 PE 接口就回「您的帐号在另一处登录」。这和「有人在你
+ * 手机上开着游戏」是一模一样的报错，所以**不能**把它当成会话冲突去等冷却，必须刷新
+ * 一次 PE 登录态再重试。VQ 每次启动都重做 PE 登录（MKeyService.PeLoginWithSauthAsync），
+ * 正是为了绕开这一点。
+ */
+export const PE_SESSION_STALE = "pe-session-stale";
+/** 商品不存在（网易 code=16「目标找不到」）：说明这个 ID 不是可领取的组件，换下一个候选 */
+export const ITEM_NOT_FOUND = "item-not-found";
+/** 商品已经拥有（网易 code=502「物品已经获得」）：视为成功，不再重复下单 */
+export const ITEM_ALREADY_OWNED = "item-already-owned";
+
+/** 这个错误是不是「PE 登录态过期」 */
+export function isPeSessionStaleError(e: unknown): boolean {
+  if (String((e as any)?.code ?? "") === PE_SESSION_STALE) return true;
+  return /另一处登录|其他地方登录|另一地登录/.test(String((e as any)?.message ?? e));
+}
+
+/** 这个错误是不是「这个 ID 没有对应商品」 */
+export function isItemNotFoundError(e: unknown): boolean {
+  if (String((e as any)?.code ?? "") === ITEM_NOT_FOUND) return true;
+  return /目标找不到|商品不存在|商品已下架|item.?not.?found/i.test(String((e as any)?.message ?? e));
+}
+
+/** 这个错误是不是「已经拥有」（内部 code / 网易 502 / 文案三种都认） */
+export function isAlreadyOwnedError(e: unknown): boolean {
+  const code = String((e as any)?.code ?? "");
+  if (code === ITEM_ALREADY_OWNED || code === "502") return true;
+  return /物品已经获得|已经拥有|已拥有/.test(String((e as any)?.message ?? e));
+}
 
 export function md5Hex(input: string | Buffer): string {
   return createHash("md5").update(input).digest("hex");
@@ -222,6 +289,80 @@ export async function resolveRentalRoom(
 
 /** 联机大厅走 apigateway；房间搜索仍走 mclobt */
 const LOBBY_HOST = "https://g79apigatewayobt.minecraft.cn";
+/** 网易“快速匹配过于频繁”冷却：避免连续点启动把账号打进小黑屋 */
+let lobbyCooldownUntil = 0;
+/** 购买接口单独的冷却：enter 10 秒，购买被限流通常要等更久 */
+let purchaseCooldownUntil = 0;
+
+function purchaseCooldownFile(): string {
+  return String(process.env.FB_PURCHASE_COOLDOWN_FILE || "").trim();
+}
+
+function readPurchaseCooldown(): number {
+  const file = purchaseCooldownFile();
+  if (!file) return purchaseCooldownUntil;
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+    const until = Number(raw?.until ?? 0) || 0;
+    return Math.max(purchaseCooldownUntil, until);
+  } catch {
+    return purchaseCooldownUntil;
+  }
+}
+
+function writePurchaseCooldown(until: number): void {
+  purchaseCooldownUntil = until;
+  const file = purchaseCooldownFile();
+  if (!file) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ until, at: Date.now() }, null, 2) + "\n", { mode: 0o600 });
+  } catch {}
+}
+
+/** 测试用：清掉冷却 */
+export function resetLobbyCooldown(): void {
+  lobbyCooldownUntil = 0;
+  purchaseCooldownUntil = 0;
+  const file = purchaseCooldownFile();
+  if (file) {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {}
+  }
+}
+
+function assertPurchaseCooldown(): void {
+  const left = readPurchaseCooldown() - Date.now();
+  if (left > 0) {
+    throw new X19ApiError(
+      `组件购买接口被限流，请 ${Math.ceil(left / 1000)} 秒后再试；也可以先在网易客户端进一次房间领取组件`,
+      "purchase-rate-limit"
+    );
+  }
+}
+
+function notePurchaseRateLimit(message: string): void {
+  if (/购买太频繁|购买频繁|频繁|rate.?limit/i.test(message)) {
+    writePurchaseCooldown(Date.now() + 30 * 60_000);
+  }
+}
+
+function assertLobbyCooldown(): void {
+  const left = lobbyCooldownUntil - Date.now();
+  if (left > 0) {
+    throw new X19ApiError(`网易提示操作过于频繁，请 ${Math.ceil(left / 1000)} 秒后再试`, "rate-limit");
+  }
+}
+
+function noteLobbyRateLimit(message: string): void {
+  if (/频繁|太快|稍后重试|rate.?limit/i.test(message)) {
+    lobbyCooldownUntil = Date.now() + 10_000;
+  }
+}
+
+/** PC 网关：PC 购买接口用 x19apigateway，不是 g79mclobt */
+const PC_GATEWAY = "https://x19apigatewayobt.nie.netease.com";
 export const DEFAULT_LOBBY_VERSION = "1.21.130";
 
 /** 网易当前版本（PE/PC）会随更新变化；缓存 10 分钟，失败/异常时回退到 DEFAULT_LOBBY_VERSION */
@@ -299,6 +440,140 @@ export async function searchLobbyRooms(
     .filter((r) => !!r.entityId);
 }
 
+/** 房间组件 ID：res_id 优先；没有就退回数字房间号，最后才是实体 ID */
+export function lobbyComponentId(room: LobbyRoom): string {
+  const resId = String(room.resId || "").trim();
+  if (resId) return resId;
+  const name = String(room.name || "").trim();
+  if (/^\d{4,10}$/.test(name)) return name;
+  return String(room.entityId || "").trim();
+}
+
+/**
+ * 领取房间绑定的组件（房间 → 组件 ID → 购买）。
+ *
+ * 组件 ID 的真实来源是房间的 `res_id`（联机专区商品 ID，例如 4659475350398889607），
+ * 不是房间号。候选顺序：调用方给的 preferredId（501/房间列表里的 res_id）→ room.resId →
+ * 房间号（VQ 对本地联机房间就是拿房间号当 item_id 赌一把）。
+ *
+ * 实测：联机专区是 PE 商城商品（channel_id=5），所以**先 PE 再 PC**；
+ * 一个候选 ID 打不通（PE/PC 都回「目标找不到」）才换下一个候选。
+ * 一旦 PE 回「另一处登录」（PE token 失效）立刻停手抛 PE_SESSION_STALE：
+ * 这时继续换候选/换通道只会白白多发购买请求，而购买接口是有限流的。
+ * 502「物品已经获得」按成功处理，不再换候选。
+ */
+export async function purchaseLobbyComponent(
+  room: LobbyRoom,
+  cred: X19Credential,
+  opts: X19PostOptions = {},
+  preferredId = ""
+): Promise<string> {
+  assertPurchaseCooldown();
+  const ids: string[] = [];
+  const push = (v: string) => {
+    const s = String(v || "").trim();
+    if (s && !ids.includes(s)) ids.push(s);
+  };
+  push(preferredId);
+  push(room.resId);
+  // 本地联机房间只有房间号可用（VQ 也是拿房间号当 item_id 去试）
+  const name = String(room.name || "").trim();
+  if (/^\d{4,10}$/.test(name)) push(name);
+  // 房间实体 ID 不再当候选：雪花 ID 一定不是商品 ID（实测只会回「目标找不到」，白打一次购买请求）
+
+  const errors: string[] = [];
+  for (const id of ids) {
+    try {
+      await purchaseComponentManually(id, cred, opts);
+      return id;
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      if (/频繁|rate.?limit/i.test(msg)) {
+        notePurchaseRateLimit(msg);
+        throw e;
+      }
+      // PE 登录态失效：刷新后才能继续，换候选 ID 没有意义
+      if (isPeSessionStaleError(e)) throw e;
+      errors.push(`${id}：${msg}`);
+    }
+  }
+  throw new X19ApiError(
+    `领取组件失败（尝试 ${ids.join(" / ")}）：${errors.join("；")}。` +
+      "这个房间绑的是联机专区组件：「联机专区」是 PE 商城商品（channel_id=5），必须在 PE 通道下领取，" +
+      "PC 商城查不到它（目标找不到）。如果一直提示「您的帐号在另一处登录」，说明本地存的 PE 登录态过期了，" +
+      "在面板点「刷新 PE 通道」再点一次「领取组件」即可。"
+  );
+}
+
+/** 进房/取地址用哪套凭据 */
+export type LobbyChannel = "pe" | "pc";
+
+/**
+ * 通道顺序：有 PE token 就先 PE。
+ *
+ * 实测（2026-11-15，uid 955512087 / PE entity 3102995735）：
+ * 同一个网易账号，联机专区商品的归属记在 **PE entity** 上——
+ *   PE 凭据 + 已领取的专区 → `/online-lobby-room-enter` code=0；
+ *   PC 凭据 + 同一个已领取的专区 → 仍然 code=501「物品还未获得」。
+ * 所以联机大厅必须先用 PE 通道进；PC 通道留作退路（PC 侧专区物品/没有 PE 登录态时）。
+ */
+export function lobbyChannelOrder(cred: X19Credential): LobbyChannel[] {
+  const order: LobbyChannel[] = [];
+  if (hasPeSession(cred)) order.push("pe");
+  if (String(cred.token || "").trim()) order.push("pc");
+  return order.length ? order : ["pc"];
+}
+
+/** 取某个通道对应的 cred */
+export function credForLobbyChannel(cred: X19Credential, channel: LobbyChannel): X19Credential {
+  return channel === "pe" ? peCredential(cred) : { userId: cred.userId, token: cred.token };
+}
+
+export type LobbyEnterResult = {
+  channel: LobbyChannel;
+  code: string;
+  message?: string;
+  /** 网易在 501 里偶尔回带的组件 ID（实测 501 的 entity 是 null，通常为空） */
+  resId: string;
+  raw: any;
+};
+
+/**
+ * 进房（带通道回退）。
+ *
+ * 501 不抛错：先记下来，换下一个通道再试一次（PE 专区被 PC 账号看不见，反之亦然）。
+ * 「另一处登录」直接抛 PE_SESSION_STALE——刷新 PE 登录态后由调用方重试，继续换通道没意义。
+ */
+async function enterLobbyRoom(
+  payload: Record<string, any>,
+  cred: X19Credential,
+  opts: X19PostOptions
+): Promise<LobbyEnterResult> {
+  const body = JSON.stringify(payload);
+  let notOwned: LobbyEnterResult | null = null;
+  for (const channel of lobbyChannelOrder(cred)) {
+    const data = await x19Post<any>("/online-lobby-room-enter", body, credForLobbyChannel(cred, channel), {
+      ...opts,
+      host: LOBBY_HOST,
+      allowCodes: ["501"],
+    });
+    const code = String(data?.code ?? "0");
+    const message = String(data?.message ?? "");
+    const resId = String(
+      data?.entity?.res_id ?? data?.entity?.item_id ?? data?.res_id ?? data?.item_id ?? data?.entities?.[0]?.res_id ?? ""
+    ).trim();
+    const result: LobbyEnterResult = { channel, code, message, resId, raw: data };
+    if (/频繁|稍后重试|rate.?limit/i.test(message)) return result;
+    if (code === "0") return result;
+    if (code === "501") {
+      notOwned = notOwned || result;
+      continue;
+    }
+    return result;
+  }
+  return notOwned || { channel: "pc", code: "-1", message: "无响应", resId: "", raw: null };
+}
+
 /** 联机大厅：进房 → 取服务器地址 → 退房（和 VQ 的顺序一致） */
 export async function resolveLobbyAddress(
   room: LobbyRoom,
@@ -306,43 +581,65 @@ export async function resolveLobbyAddress(
   cred: X19Credential,
   opts: X19PostOptions = {}
 ): Promise<RentalAddress> {
+  assertLobbyCooldown();
   const enterPayload: Record<string, any> = {
     room_id: room.entityId,
     password: String(password ?? ""),
     lobby_manifest_version: room.lobbyManifestVersion || "",
     check_visibilily: true,
   };
-  // 带组件的房间要把资源 ID 一起报给房间服务；原版房间保持旧请求体不变
   if (room.resId) enterPayload.res_id = room.resId;
-  const enterBody = JSON.stringify(enterPayload);
+
+  let entered: LobbyEnterResult;
   try {
-    await x19Post("/online-lobby-room-enter", enterBody, cred, { ...opts, host: LOBBY_HOST });
+    entered = await enterLobbyRoom(enterPayload, cred, opts);
   } catch (e: any) {
-    if (/物品还未获得/.test(String(e?.message ?? e))) {
-      throw new X19ApiError(
-        `房间「${room.name || room.entityId}」带模组（组件），机器人账号还没有获得该组件；` +
-          "请用同一个网易账号在客户端进入一次该房间（或领取组件）后重试" +
-          (e?.code ? `（${e.code}）` : "") +
-          "。也可以先用原版房间验证进房链路。",
-        String(e?.code ?? ""),
-        Number(e?.status ?? 0)
-      );
-    }
+    noteLobbyRateLimit(String(e?.message ?? e));
     throw e;
   }
-
-  let data: any;
-  try {
-    data = await x19Post<any>("/online-lobby-game-enter", "", cred, { ...opts, host: LOBBY_HOST });
-  } finally {
-    // 拿到地址后释放房间席位（VQ 也是这么做的），失败不影响进服
-    const leaveBody = JSON.stringify({ room_id: room.entityId, team_quit: false });
-    x19Post("/online-lobby-room-enter/leave-room", leaveBody, cred, { ...opts, host: LOBBY_HOST }).catch(() => {});
+  if (/频繁|稍后重试|rate.?limit/i.test(String(entered.message ?? ""))) {
+    noteLobbyRateLimit(String(entered.message ?? ""));
+    throw new X19ApiError(`网易提示：${entered.message}，请稍后再试`, "rate-limit");
   }
-  const host = String(data?.entity?.server_host ?? "").trim();
-  const port = String(data?.entity?.server_port ?? "").trim();
-  if (!host || !port) throw new X19ApiError("网易没有返回联机大厅地址（房间已满/密码错误/房间不存在）");
-  return { host, port };
+
+  if (entered.code === "501") {
+    // 组件不自动领取：领错/领重复都由用户自己决定，这里只把可用的组件 ID 抖出来
+    const knownResId = String(entered.resId || room.resId || "").trim();
+    const componentId = knownResId || room.entityId;
+    // 501 的响应体里没有组件 ID（实测 entity 是 null），房间列表里的 res_id 才是它
+    const howToGet = knownResId ? "" : "（这次不知道组件 ID：先在面板点「搜索房间」找到这间房，选中后组件 ID 会自动填好）";
+    throw new X19ApiError(
+      `联机大厅房间「${room.name || room.entityId}」绑了联机专区组件（网易回 501：物品还未获得），组件 ID：${componentId}${howToGet}。` +
+        "要进这个房间，先在面板点「领取组件」（联机专区是 PE 商城商品，必须走 PE 通道领取；领取后会自动重试一次进房）",
+      "501"
+    );
+  }
+  if (entered.code !== "0") {
+    const tail = entered.message ? `：${entered.message}` : "";
+    throw new X19ApiError(
+      `联机大厅房间「${room.name || room.entityId}」进房失败（code=${entered.code}）${tail}`,
+      entered.code
+    );
+  }
+
+  // 取地址/退房必须用进房成功的那套凭据，否则会被当成另一个会话
+  const useCred = credForLobbyChannel(cred, entered.channel);
+  const readAddress = async (): Promise<RentalAddress | null> => {
+    let data: any;
+    try {
+      data = await x19Post<any>("/online-lobby-game-enter", "", useCred, { ...opts, host: LOBBY_HOST });
+    } finally {
+      const leaveBody = JSON.stringify({ room_id: room.entityId, team_quit: false });
+      x19Post("/online-lobby-room-enter/leave-room", leaveBody, useCred, { ...opts, host: LOBBY_HOST }).catch(() => {});
+    }
+    const host = String(data?.entity?.server_host ?? "").trim();
+    const port = String(data?.entity?.server_port ?? "").trim();
+    return host && port ? { host, port } : null;
+  };
+
+  const address = await readAddress();
+  if (!address) throw new X19ApiError("网易没有返回联机大厅地址（房间已满/密码错误/房间不存在）");
+  return address;
 }
 
 /** 联机大厅：搜索 + 选房 + 地址 */
@@ -352,8 +649,23 @@ export async function resolveLobbyRoom(
   cred: X19Credential,
   opts: X19PostOptions & { version?: string } = {}
 ): Promise<{ server: LobbyRoom; address: RentalAddress }> {
-  const list = await searchLobbyRooms(keyword, cred, opts);
   const key = String(keyword || "").trim();
+  // 面板选中的实体 ID 是长数字，搜索接口按房间名匹配不到，直接进房
+  if (/^\d{10,}$/.test(key)) {
+    const room: LobbyRoom = {
+      entityId: key,
+      name: key,
+      hasPwd: !!password,
+      playerCount: 0,
+      maxCount: 0,
+      version: "",
+      lobbyManifestVersion: "",
+      resId: key,
+    };
+    const address = await resolveLobbyAddress(room, password, cred, opts);
+    return { server: room, address };
+  }
+  const list = await searchLobbyRooms(keyword, cred, opts);
   const exact = list.find((r) => r.entityId === key);
   const server = exact || (list.length === 1 ? list[0] : null);
   if (!server) {
@@ -430,52 +742,253 @@ export function parseLocalEndpoint(input: { host?: string; port?: string | numbe
 }
 
 /**
- * PE 本地联机：直接按房间号进房（不走搜索）。
+ * 本地联机：直接按房间号进房（不走搜索）。
  *
- * VQ 客户端就是这么做的：本地联机房间不会出现在联机大厅的搜索结果里，但
- * `/online-lobby-room-enter` 直接用房间号可以进；如果返回 501（组件未购买），
- * 先调 `/pe-purchase-item/` 领取组件再重试一次。
+ * VQ 客户端就是这么做的（LaunchPage.OnPeRoomIdEnterClick + LobbyService.EnterRoomAsync）：
+ * 本地联机房间不会出现在联机大厅的搜索结果里，但 `/online-lobby-room-enter` 直接用房间号
+ * 可以进。带专区组件的房间会回 501（物品还未获得），此时由用户点「领取组件」领完再进。
+ *
+ * 与大厅一样先 PE 后 PC：专区归属记在 PE entity 上（实测）。
  */
 export async function enterPeRoom(
   roomId: string,
   password: string,
   cred: X19Credential,
   opts: X19PostOptions = {}
-): Promise<{ code: string; message?: string }> {
-  const body = JSON.stringify({
+): Promise<{ code: string; message?: string; resId: string; channel: LobbyChannel }> {
+  const payload = {
     room_id: String(roomId),
     password: String(password ?? ""),
     lobby_manifest_version: "",
     check_visibilily: true,
-  });
-  const data = await x19Post<any>("/online-lobby-room-enter", body, cred, {
-    ...opts,
-    host: LOBBY_HOST,
-    allowCodes: ["501"],
-  });
-  return { code: String(data?.code ?? "0"), message: data?.message };
+  };
+  const entered = await enterLobbyRoom(payload, cred, opts);
+  if (entered.code === "501") {
+    // 501 的原始响应实测是 {"code":501,"message":"物品还未获得","entity":null}，
+    // 不带组件 ID；这里留一条日志，方便排查到底是哪个房间/组件
+    console.warn(`[netease-room] 进房 501 原始响应：${JSON.stringify(entered.raw).slice(0, 500)}`);
+  }
+  return { code: entered.code, message: entered.message, resId: entered.resId, channel: entered.channel };
 }
 
-/** PE：领取联机房间绑定的组件（免费组件也会走这里） */
-export async function purchasePeRoomComponent(
+/**
+ * 购买结果。
+ *
+ * `alreadyOwned` 来自网易 code=502「物品已经获得」——VQ 的 PurchaseComponentAsync 把 502
+ * 当失败（只认 code=0），实测这条路会把「其实已经拥有了」显示成领取失败，所以这里单独区分：
+ * 502 等价成功，不再下单（面板上告诉用户「已拥有」即可）。
+ */
+export type PurchaseOutcome = {
+  channel: "pc" | "pe";
+  itemId: string;
+  alreadyOwned: boolean;
+};
+
+/**
+ * 把购买接口的失败分类成可判断的错误。
+ *
+ * 网易把业务错误放在 JSON 的 code/message 里（HTTP 一律 200），x19Post 会把非 0 折叠成
+ * 异常，所以这里同时接受「异常」和「原始 data」两种输入。
+ * 实测的错误码（2026-11-15，PE 商城 /pe-purchase-item/）：
+ *   0   领取成功
+ *   502 「物品已经获得」→ 已经拥有，等价成功
+ *   16  「目标找不到」→ 这个 ID 不是可领取的商品（例如把房间号当组件 ID）
+ *   其它 + 「您的帐号在另一处登录」→ PE token 被顶掉
+ */
+function normalizePurchaseError(e: any, channel: "pc" | "pe", path: string): X19ApiError {
+  const message = String(e?.message ?? e?.msg ?? e ?? "");
+  const code = String(e?.code ?? "");
+  if (/另一处登录|其他地方登录|另一地登录/.test(message) && channel === "pe") {
+    return new X19ApiError(`PE 通道登录态已失效：${message}`, PE_SESSION_STALE);
+  }
+  // 去掉 x19Post 加的「网易接口 /path 失败：」前缀，统一成「PE 商城目标找不到」这种短句
+  const label = channel === "pe" ? "PE 商城" : "PC 商城";
+  const short = message.replace(/^网易接口 \S+ 失败：/, "");
+  if (/物品已经获得|已经获得/.test(message)) return new X19ApiError(`${label}${short}`, ITEM_ALREADY_OWNED);
+  if (/目标找不到|商品不存在|已下架/i.test(message)) return new X19ApiError(`${label}${short}`, ITEM_NOT_FOUND);
+  if (/频繁|稍后重试|rate.?limit/i.test(message)) {
+    return new X19ApiError(`领取组件被限流：${message}`, code || "rate-limit");
+  }
+  if (e instanceof X19ApiError) return e;
+  return new X19ApiError(`网易接口 ${path} 失败：${message || `code=${code}`}`, code);
+}
+
+/**
+ * PC 商城：领取组件（VQ `LobbyService.PurchaseComponentAsync(isPe:false)`）。
+ *
+ * 注意：联机专区（channel_id=5）是 PE 商城商品，PC 商城查不到，这里只会回 code=16
+ * 「目标找不到」。它只对 PC 侧商品（channel_id=11）有意义——所以调用方（面板手动领取）
+ * 会先打 PE 接口，PC 只是没有 PE 登录态时的退路。
+ */
+export async function purchasePcComponent(
   resId: string,
   cred: X19Credential,
   opts: X19PostOptions = {}
-): Promise<void> {
+): Promise<PurchaseOutcome> {
+  const id = String(resId);
+  const numericId = /^\d{1,6}$/.test(id) ? Number(id) : id;
   const body = JSON.stringify({
-    item_id: String(resId),
+    entity_id: 0,
+    item_id: numericId,
+    item_level: 0,
+    user_id: String(cred.userId),
+    purchase_time: 0,
+    last_play_time: 0,
+    total_play_time: 0,
+    receiver_id: "",
+    buy_path: "PC_H5_COMPONENT_DETAIL",
+    coupon_ids: null,
+    diamond: 0,
+    activity_name: "",
+    batch_count: 1,
+  });
+  let data: any;
+  try {
+    data = await x19Post<any>("/user-item-purchase", body, cred, {
+      ...opts,
+      host: PC_GATEWAY,
+      allowCodes: ["502", "16"],
+    });
+  } catch (e: any) {
+    throw normalizePurchaseError(e, "pc", "/user-item-purchase");
+  }
+  const code = String(data?.code ?? "0");
+  if (code === "0") return { channel: "pc", itemId: id, alreadyOwned: false };
+  if (code === "502") return { channel: "pc", itemId: id, alreadyOwned: true };
+  if (code === "16") throw new X19ApiError(`PC 商城${data?.message || "目标找不到"}`, ITEM_NOT_FOUND);
+  throw normalizePurchaseError(data, "pc", "/user-item-purchase");
+}
+
+/**
+ * PE 商城：领取联机房间绑定的组件（VQ `LobbyService.PurchaseComponentAsync(isPe:true)`）。
+ *
+ * host 用 g79mclobt（VQ: PeWebServer），body 的 item_id 必须是 JSON 字符串——
+ * VQ 用 JsonConvert.ToString 发；发成数字会被判「参数错误」。
+ * 必须用 PE 通道的 user-id/user-token：用 PC token 打这个接口回「参数错误」。
+ */
+export async function purchasePeRoomComponent(
+  resId: string,
+  cred: X19Credential,
+  opts: X19PostOptions & { pcFallback?: boolean } = {}
+): Promise<PurchaseOutcome> {
+  const id = String(resId);
+  // VQ 全程按字符串发（JsonConvert.ToString）：item_id 发成数字会被判「参数错误」
+  const peBody = JSON.stringify({
+    item_id: id,
     expertcomment_info: {
-      item_id: String(resId),
+      item_id: id,
       expertcomment_id: "0",
       video_url: "0",
       expert_id: "0",
-      buy_path: `首页-联机大厅-详情页:${resId}`,
+      buy_path: `首页-联机大厅-详情页:${id}`,
       coupon_ids: [],
       cdk_code: "",
     },
   });
-  await x19Post("/pe-purchase-item/", body, cred, { ...opts, host: RENTAL_HOST });
+  // PE 接口只认 PE 通道的登录态；没有 PE token 时才退回 PC token（旧版本账号）
+  const peCred = peCredential(cred);
+  let data: any;
+  try {
+    data = await x19Post<any>("/pe-purchase-item/", peBody, peCred, {
+      ...opts,
+      host: RENTAL_HOST,
+      allowCodes: ["502", "16"],
+    });
+  } catch (e: any) {
+    const err = normalizePurchaseError(e, "pe", "/pe-purchase-item/");
+    // 有些账号/服务端只认 PC 的购买接口，PE 接口会回「参数错误」
+    if (opts.pcFallback !== false && /参数错误|invalid|param/i.test(err.message)) {
+      return purchasePcComponent(id, cred, opts);
+    }
+    throw err;
+  }
+  const code = String(data?.code ?? "0");
+  if (code === "0") return { channel: "pe", itemId: id, alreadyOwned: false };
+  if (code === "502") return { channel: "pe", itemId: id, alreadyOwned: true };
+  if (code === "16") throw new X19ApiError(`PE 商城${data?.message || "目标找不到"}`, ITEM_NOT_FOUND);
+  const err = normalizePurchaseError(data, "pe", "/pe-purchase-item/");
+  if (opts.pcFallback !== false && /参数错误|invalid|param/i.test(err.message)) {
+    return purchasePcComponent(id, cred, opts);
+  }
+  throw err;
 }
+
+/**
+ * 手动领一个组件 ID（面板「领取组件」按钮）。
+ *
+ * 顺序按实测结论定（2026-11，PC uid 955512087 / PE entity 3102995735）：
+ *   1) 联机专区是 **PE 商城**商品（channel_id=5），PC 商城根本查不到它 → 先打 PE 接口；
+ *   2) PE token 失效时网易回「另一处登录」→ 抛 PE_SESSION_STALE，交给调用方刷新 PE
+ *      登录态后重试一次；这时**不要**接着打 PC（PC 只会「目标找不到」），白多一个购买请求；
+ *   3) PE 明确回「目标找不到」（code=16）才换 PC 接口，照顾 PC 侧商品；
+ *   4) 502「物品已经获得」直接算成功。
+ * 全程最多 2 个购买请求，不存在重复下单。
+ */
+export async function purchaseComponentManually(
+  id: string,
+  cred: X19Credential,
+  opts: X19PostOptions = {}
+): Promise<PurchaseOutcome> {
+  const itemId = String(id ?? "").trim();
+  if (!itemId) throw new X19ApiError("请填写组件 ID");
+  // 有可用的 PE 登录态就先走 PE 商城（联机专区都在 PE 商城），没有才退回 PC
+  const order: Array<"pe" | "pc"> = hasPeSession(cred) ? ["pe", "pc"] : ["pc"];
+  const errors: string[] = [];
+  for (const channel of order) {
+    try {
+      if (channel === "pe") {
+        return await purchasePeRoomComponent(itemId, cred, { ...opts, pcFallback: false });
+      }
+      return await purchasePcComponent(itemId, cred, opts);
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      if (/频繁|rate.?limit/i.test(msg)) {
+        notePurchaseRateLimit(msg);
+        throw e;
+      }
+      // PE 登录态失效：必须刷新 PE 再重试，换通道没有意义
+      if (isPeSessionStaleError(e)) throw e;
+      errors.push(msg);
+    }
+  }
+  throw new X19ApiError(`组件 ${itemId} 领取失败（${errors.join("；")}）`);
+}
+
+/**
+ * 查「本账号是否已拥有这些组件/专区」。
+ *
+ * 协议来源：VQ `LobbyService.GetZoneImagesAsync` —— `/item-channel/query/search-item-channel-list-by-id`
+ * 带 `channel_id` + `item_id_list`，返回里的 `buy_state`（1=已拥有，0=未拥有）。
+ * VQ 只用它取封面图（channel_id 11 = PC 商城，打 x19apigateway）；联机专区是
+ * channel_id 5（PE 商城），要打 g79apigateway 并用 PE 凭据。
+ *
+ * 面板在发购买请求前先查一次，已经拥有就不下单（购买接口有限流，白打一次很亏）。
+ */
+export async function fetchZoneOwnership(
+  itemIds: string[],
+  cred: X19Credential,
+  opts: X19PostOptions & { channelId?: number } = {}
+): Promise<Map<string, boolean>> {
+  const ids = [...new Set(itemIds.map((v) => String(v ?? "").trim()).filter(Boolean))];
+  const out = new Map<string, boolean>();
+  if (!ids.length) return out;
+  const channelId = Number(opts.channelId ?? 5) || 5;
+  const body = JSON.stringify({ channel_id: channelId, item_id_list: ids });
+  const data = await x19Post<any>("/item-channel/query/search-item-channel-list-by-id", body, cred, {
+    ...opts,
+    host: channelId === 5 ? LOBBY_HOST : PC_GATEWAY,
+    allowCodes: ["16"],
+  });
+  for (const item of Array.isArray(data?.entities) ? data.entities : []) {
+    const itemId = String(item?.item_id ?? "").trim();
+    if (!itemId) continue;
+    out.set(itemId, Number(item?.buy_state ?? 0) === 1);
+  }
+  // 网易没返回的 ID 视为未拥有（例如 ID 打错、商品已下架）
+  for (const id of ids) if (!out.has(id)) out.set(id, false);
+  return out;
+}
+
 
 /**
  * PE 本地联机：房间号 → host/port。
@@ -485,32 +998,52 @@ export async function resolvePeLocalRoom(
   roomId: string,
   password: string,
   cred: X19Credential,
-  opts: X19PostOptions = {}
+  opts: X19PostOptions & { componentId?: string } = {}
 ): Promise<RentalAddress> {
+  assertLobbyCooldown();
   const room = String(roomId || "").trim();
   if (!/^\d{4,8}$/.test(room)) throw new X19ApiError("请填写 4–8 位本地联机房间号");
 
-  let entered = await enterPeRoom(room, password, cred, opts);
-  if (entered.code === "501") {
-    await purchasePeRoomComponent(room, cred, opts);
+  let entered;
+  try {
     entered = await enterPeRoom(room, password, cred, opts);
+  } catch (e: any) {
+    noteLobbyRateLimit(String(e?.message ?? e));
+    throw e;
   }
+  // 取地址/退房跟着进房成功的通道走（PE 进就用 PE 凭据）
+  const useCred = credForLobbyChannel(cred, entered.channel);
+  const readAddress = async (): Promise<RentalAddress | null> => {
+    let data: any;
+    try {
+      data = await x19Post<any>("/online-lobby-game-enter", "", useCred, { ...opts, host: LOBBY_HOST });
+    } finally {
+      const leaveBody = JSON.stringify({ room_id: room, team_quit: false });
+      x19Post("/online-lobby-room-enter/leave-room", leaveBody, useCred, { ...opts, host: LOBBY_HOST }).catch(() => {});
+    }
+    const host = String(data?.entity?.server_host ?? "").trim();
+    const port = String(data?.entity?.server_port ?? "").trim();
+    return host && port ? { host, port } : null;
+  };
+
+  if (entered.code === "501") {
+    // 不自动领取组件：只告诉用户是哪个组件，领不领、怎么领由他自己决定
+    const componentId = entered.resId || String(opts.componentId ?? "").trim() || room;
+    throw new X19ApiError(
+      `本地联机房间 ${room} 绑了联机专区组件（网易回 501：物品还未获得），组件 ID：${componentId}。` +
+        "要进这个房间，先在面板点「领取组件」（联机专区是 PE 商城商品，必须走 PE 通道领取；领取后会自动重试一次进房）",
+      "501"
+    );
+  }
+
   if (entered.code !== "0") {
     const tail = entered.message ? `：${entered.message}` : "";
     throw new X19ApiError(`本地联机房间 ${room} 进房失败（code=${entered.code}）${tail}`, entered.code);
   }
 
-  let data: any;
-  try {
-    data = await x19Post<any>("/online-lobby-game-enter", "", cred, { ...opts, host: LOBBY_HOST });
-  } finally {
-    const leaveBody = JSON.stringify({ room_id: room, team_quit: false });
-    x19Post("/online-lobby-room-enter/leave-room", leaveBody, cred, { ...opts, host: LOBBY_HOST }).catch(() => {});
-  }
-  const host = String(data?.entity?.server_host ?? "").trim();
-  const port = String(data?.entity?.server_port ?? "").trim();
-  if (!host || !port) throw new X19ApiError("网易没有返回本地联机地址（房间可能已关闭/人数已满）");
-  return { host, port };
+  const address = await readAddress();
+  if (!address) throw new X19ApiError("网易没有返回本地联机地址（房间可能已关闭/人数已满）");
+  return address;
 }
 
 export type EngineLaunchOptions = {

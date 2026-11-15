@@ -15,6 +15,7 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -25,8 +26,11 @@ import android.webkit.WebViewClient;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.net.Socket;
 
 /**
@@ -50,8 +54,11 @@ public class MainActivity extends Activity {
     private TextView status;
     private TextView gear;
     private static final int REQ_FILE = 1001;
+    private static final int REQ_SAVE = 1002;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private ValueCallback<Uri[]> fileCallback;
+    private String pendingSaveName = "";
+    private String pendingSaveContent = "";
     private SharedPreferences prefs;
     private String mode = "";
     private String remoteUrl = "";
@@ -115,6 +122,7 @@ public class MainActivity extends Activity {
                 webView.setVisibility(View.GONE);
             }
         });
+        webView.addJavascriptInterface(new SaveBridge(), "CubeloomNative");
         webView.setVisibility(View.GONE);
         root.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -258,12 +266,55 @@ public class MainActivity extends Activity {
         return Math.round(getResources().getDisplayMetrics().density * v);
     }
 
+    /** 暴露给网页的保存入口：只做“弹系统另存为”，不直接读文件系统 */
+    public class SaveBridge {
+        @JavascriptInterface
+        public void saveText(String filename, String content) {
+            runOnUiThread(() -> startSaveFile(filename, content));
+        }
+    }
+
+    /** 用系统“另存为”窗口保存文本（登录态导出等），不直接写死目录 */
+    private void startSaveFile(String filename, String content) {
+        pendingSaveName = (filename == null ? "" : filename).replaceAll("[\\\\/:*?\"<>|\\n\\r]", "_").trim();
+        if (pendingSaveName.isEmpty()) pendingSaveName = "cubeloom-session.json";
+        pendingSaveContent = content == null ? "" : content;
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, pendingSaveName);
+        try {
+            startActivityForResult(intent, REQ_SAVE);
+        } catch (Exception e) {
+            toastStatus("打开保存窗口失败：" + e.getMessage());
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == REQ_FILE) {
             if (fileCallback != null) {
                 fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
                 fileCallback = null;
+            }
+            return;
+        }
+        if (requestCode == REQ_SAVE) {
+            Uri uri = (resultCode == RESULT_OK && data != null) ? data.getData() : null;
+            if (uri == null) {
+                Toast.makeText(this, "已取消保存", Toast.LENGTH_SHORT).show();
+                pendingSaveContent = "";
+                return;
+            }
+            try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                if (os == null) throw new IllegalStateException("无法打开输出流");
+                os.write(pendingSaveContent.getBytes(StandardCharsets.UTF_8));
+                os.flush();
+                Toast.makeText(this, "已保存：" + uri, Toast.LENGTH_LONG).show();
+            } catch (Exception e) {
+                Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+            } finally {
+                pendingSaveContent = "";
             }
             return;
         }

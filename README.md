@@ -1,12 +1,12 @@
 # Cubeloom
 
 [![CI](https://github.com/xiaopi668/cubeloom/actions/workflows/ci.yml/badge.svg)](https://github.com/xiaopi668/cubeloom/actions/workflows/ci.yml)
-[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A520-informational.svg)](.github/workflows/ci.yml)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg?logo=gnu)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-informational.svg?logo=nodedotjs&logoColor=white)](.github/workflows/ci.yml)
 
 > WebSocket based Minecraft Bedrock structure generator —— 把方块织成建筑。
 
-在电脑或手机上跑一个本地服务，游戏里 `/connect ws://127.0.0.1:11451` 连上去，
+在电脑或手机上跑一个本地服务，游戏里 `/connect ws://127.0.0.1:11451` 连上去（国际基岩版，网易版见下文），
 然后由它**替你一块一块地放方块**：既可以导入现成建筑文件，也可以用代码现场"算"出形状。
 
 ```
@@ -19,7 +19,7 @@ npm run cli                # 终端交互版
 
 > 尚未发布到 npm（`package.json` 里没有 `bin` 入口），请用仓库内脚本启动。
 
-许可证：**AGPL-3.0-or-later**。见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
+许可证：**AGPL-3.0-or-later**。见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -31,7 +31,8 @@ npm run cli                # 终端交互版
 | **体素几何** | 聊天栏发 `-<代码>` 执行 JavaScript，用 `sphere` / `circle` / `torus` / `lsystem` / 参数方程 / 海龟绘图直接生成建筑 |
 | **音乐盒** | MIDI 文件 → 游戏内 `note.*` 音符盒音色播放，支持鼓通道与变速 |
 | **像素画 / 像素字** | 上传图片或输入文本 → 方块画 |
-| **网易版接入** | 通过外部机器人事件桥（协议基线 MCBE 1.21.130 / 898）驱动原版指令 |
+| **网易版接入** | 账号登录（x19 + 可选 PE 双通道）→ 租赁服 / 联机大厅 / 山头服 / **本地联机房间号** 四种进服方式，经机器人事件桥（协议基线 MCBE 1.21.130 / 898）驱动原版指令 |
+| **联机组件** | 房间绑了联机专区组件时（网易回 `501`）报出组件 ID，面板「领取组件」手动领取，不自动发购买请求 |
 | **损坏修补** | 结构文件损坏时自动修补，导入失败可重试补建 |
 
 ## 快速开始
@@ -169,7 +170,7 @@ FB_NO_OPEN=1 npm run admin     # 面板 + WS 一起起；只要 WS 就换成 npm
 | 面板打不开 | 面板默认只绑 `127.0.0.1` | 按上面方式一第 6 步放开并设口令 |
 | 连接后被踢、提示版本不符 | 客户端版本太新/太旧 | 用 `FB_WS_VERSION` 调整协议版本后重启 |
 
-## 网易版（租赁服 / 互通服）
+## 网易版（租赁服 / 联机大厅 / 山头服 / 本地联机）
 
 网易版客户端用不了 `/connect`，所以走另一条路：**机器人以玩家身份进服**，Cubeloom 把算好的指令经事件桥交给机器人执行。
 
@@ -183,9 +184,9 @@ FB_NO_OPEN=1 npm run admin     # 面板 + WS 一起起；只要 WS 就换成 npm
 
 | 项 | 要求 |
 |---|---|
-| 机器人本体 | **仓库自带** NTvector 官方 Windows 包（[vendor/ntvector](vendor/ntvector/)，MIT）+ Cubeloom 桥插件，`npm run setup:netease-bot` 一键解压 |
-| 机器人账号 | 面板里直接填**网易账号 + 密码**（或短信验证码）和**房间号**；账号必须是目标服的 **OP**，或服务器开启作弊 |
-| 运行平台 | 引擎是 Windows x64（Program.exe）：Windows 原生跑；Linux/macOS 装 Wine 也能跑（本机已验证引擎启动 → Python 3.12 → RakNet 初始化，真实进服待实测） |
+| 机器人本体 | **仓库自带** NTvector 官方包（[vendor/ntvector](vendor/ntvector/)，MIT）+ Cubeloom 桥插件，`npm run setup:netease-bot` 一键解压 |
+| 机器人账号 | 面板里直接填**网易账号 + 密码**（或短信验证码）和**房间号**；账号必须是目标服的 **OP**，或服务器开启作弊（租赁服/山头服） |
+| 运行平台 | Windows 原生 `Program.exe`；Linux / macOS 用 `npm run build:engine` 编原生引擎（不再依赖 Wine，未构建时才回退 Wine）；Android 用 `libcubeloom_engine.so` + Chaquopy Python 3.12 |
 | 协议基线 | MCBE 1.21.130 / 协议 898，可用 `FB_NETEASE_PROTOCOL` 覆盖（基线常量见 `src/netease-protocol.ts`） |
 
 ### 各平台怎么跑引擎
@@ -224,10 +225,28 @@ npm run admin                 # 2. 打开面板 →「网易版」页
 | 类型 | 填什么 | 引擎参数 |
 |---|---|---|
 | 租赁服 | 房间号 / 房间名（可搜索），有密码填密码 | `RentalGame` + `/rental-server-*` |
-| 联机大厅 | 房间号 / 房间名（可搜索），有密码填密码 | `LobbyGame` + `/online-lobby-*` |
+| 联机大厅 | 房间号 / 房间名（可搜索），有密码填密码 | `LobbyGame` + `/online-lobby-*`；501 时报出组件 ID，手动领取 |
 | 山头服 | 点「刷新山头服列表」选一个，或填 sid；邀请码可先加入 | `DomainGame` + `/domain-server-*` |
-| 本地联机 | **4–8 位房间号**（可带房间密码） | 直接 `/online-lobby-room-enter`；组件未获得时自动领取后重试 → `/online-lobby-game-enter` |
-> 本地联机房间不会出现在「联机大厅」的搜索结果里，但可以按房间号**直接进房**（VQ 客户端也是这么做的）。带模组（组件）的房间如果返回 `501 / 物品未获得`，Cubeloom 会自动调 `/pe-purchase-item/` 领取组件再重试一次；领取失败才会报错。
+| 本地联机 | **4–8 位房间号**（可带房间密码）；501 时把报出的组件 ID 填到「组件 ID」 | 直接 `/online-lobby-room-enter` → `/online-lobby-game-enter` |
+> 本地联机房间不会出现在「联机大厅」的搜索结果里，但可以按房间号**直接进房**（VQ 客户端也是这么做的）。
+>
+> **`501 物品还未获得` 到底是什么**：当前凭据对应的账号（**PE entity**）没有这间房绑定的联机专区商品。联机专区是 **PE 商城商品**（`channel_id=5`），归属记在 PE entity 上——同一个账号用 PC 凭据进同一间房照样 `501`，PC 商城也查不到该商品（回 `目标找不到`）。所以**领取和进房都要走 PE 通道**。
+>
+> **组件是手动领取的**（进房流程不会自动购买）。报错里会给出组件 ID：联机大厅是房间列表里的 `res_id`（例如 `4659475350398889607`），本地联机通常是房间号（`501` 响应里的 `entity` 是 `null`，不带组件 ID）。把它填到「组件 ID」后点 **「领取组件」**：
+>
+> 具体做了什么：① 先查 `/item-channel/query/search-item-channel-list-by-id`（`channel_id=5`）的 `buy_state`，**已经拥有就跳过下单**；② 走 PE 商城 `/pe-purchase-item/`（host `g79mclobt.minecraft.cn`，`item_id` 必须是 JSON 字符串），PE 回 `code=16 目标找不到` 才换 PC 商城、`502 物品已经获得` 按成功处理；③ 领完自动重试**一次**进房，成功就把 `host:port` 直接显示出来（不会重复下单）。
+>
+> **「您的帐号在另一处登录」是什么**：不是手机抢了会话，而是**手里的 PE token 已经被下一次 `/pe-authentication` 顶掉**——网易每成功登录一次 PE，同账号之前的 PE token 立刻作废。Cubeloom 的处理：把 `peTokenAt` 存进 `session.json`；领组件/进房前 token 超过 30 分钟先刷新；真撞上就用 sauth 重登一次（同时换新 x19 + PE）再重试一次。
+>
+> **PC / PE 会互相挤**：做 PE 认证会把同账号的 x19 会话挤掉（PC 接口随后回「请先登录」，单靠「刷新登录态」救不回来），所以这里统一用 sauth 重登一次、一次换两套 token。PE 登录另有频控（连续登录十几次会回「操作过于频繁」），因此 PE 保鲜 30 分钟，冷却落盘到 `netease-bot/auth-cooldown.json`（20 分钟），引擎正在跑时不主动刷新。
+>
+> **启动引擎用哪套账号**：联机大厅 / 本地联机用 PE 的 `--UserID/--MD5Token`（配合 `--g79`，与 VQ 的 PE 模式一致）；租赁服 / 山头服仍用 PC 登录态。
+>
+> 手动兜底：面板「登录态」点 **「PE 通道登录」**（用存下的 `netease-bot/sauth.json`，0600，等同凭据），然后再点一次「领取组件」。
+>
+> 完整证据链、错误码表和限流坑见 [docs/组件领取排查.md](docs/组件领取排查.md)。
+>
+> **关于 PE（基岩版）通道**：`/pe-purchase-item/`、`/pe-user-item-purchase`、`/item-channel` 这些 g79 接口只认 PE 通道的 `entity_id + token`，拿 PC 的 x19 token 去调只会回 `参数错误`。登录时勾「同时登录 PE 通道」会用同一份 sauth 走一次 `/pe-authentication`（`PeSign` 签名 + G79 V12 AES，和 VQ 一致）；不勾也没关系——联机大厅/本地联机需要 PE 时，Cubeloom 会用 sauth 自动补一次。
 
 3. 点 **「启动机器人 + 网易服务」**。
 
@@ -244,6 +263,16 @@ admin-server ──X19 动态签名──> g79mclobt.minecraft.cn
               Program.exe --ServerIP … --UserID … --MD5Token …（argv，不经 shell）
 ```
 
+端口分工（都在本机，可改）：
+
+| 端口 | 用途 |
+|---|---|
+| 11451 | WS 服务（国际版 `/connect`） |
+| 11452 | 网页面板（默认仅 `127.0.0.1`） |
+| 11453 | 本机控制接口（面板 / CLI 调 `main.ts`） |
+| 11454 | 网易版导入服务 `netease-service.ts`（`FB_NETEASE_PORT`） |
+| 17999 | 机器人事件桥 TCP（`cubeloom_bridge` 插件监听，`FB_NETEASE_SOCKET`） |
+
 - 密码只用于换 token，**不落盘、不进日志**；账号/房间/房间密码存在 `netease-bot/account.json`（0600）。
 - 账号登录只支持**网易官服**（网易邮箱 / 手机号）；手机号填 **11 位大陆号码，不带 +86/区号**（带 `+86`、空格、横线会自动清理）。4399 等渠道服请用「高级 → mc.cfg」方式。
 - token 只在 `admin-server` 内存里，默认 6 小时过期，过期后重新登录即可。
@@ -256,14 +285,26 @@ admin-server ──X19 动态签名──> g79mclobt.minecraft.cn
 登录成功后会把 `entity_id + token` 存到 `netease-bot/session.json`（权限 0600），
 `admin-server` 启动时会自动读出来并调用登录助手刷新 token，所以重启面板/重开程序一般不用再登录。
 
-面板「网易账号 / 房间」下面有四个按钮：
+面板「网易账号 / 房间」下面有五个按钮：
 
 | 按钮 | 作用 |
 |---|---|
-| 导出登录态 | 下载 `cubeloom-netease-session-<uid>.json`，可带到别的机器导入 |
+| 导出登录态 | 下载 `cubeloom-netease-session-<uid>.json`（含 `entity_id` / `token`，有 PE 通道时也带 `pe_token`），可带到别的机器导入 |
 | 导入登录态 | 选一个导出的 JSON，验证并刷新后直接登录 |
 | 刷新登录态 | 手动用当前 token 换新 token |
-| 清除保存 | 删除本地 `session.json`（当前会话仍可用，退出/重启后才需要重登） |
+| PE 通道登录 | 用登录时存下的 `netease-bot/sauth.json` 单独换一次 PE（基岩版）token，不用重输密码 |
+| 清除保存 | 删除本地 `session.json` / `sauth.json`（当前会话仍可用，退出/重启后才需要重登） |
+
+本机保存的文件（全部 0600，已 gitignore）：
+
+| 文件 | 内容 |
+|---|---|
+| `netease-bot/account.json` | 账号、房间类型、房间号、房间密码、组件 ID（不含密码/token） |
+| `netease-bot/session.json` | `entity_id + token`；有 PE 通道时还有 `pe_entity_id + pe_token + peTokenAt`（PE token 的取得时间） |
+| `netease-bot/sauth.json` | 登录用的 sauth（换 PE token 用），**等同于凭据** |
+| `netease-bot/lobby-cooldown.json` | 「快速匹配过于频繁」的 10 秒冷却，重启也不丢 |
+| `netease-bot/purchase-cooldown.json` | 组件购买接口被限流后的 30 分钟冷却 |
+| `netease-bot/auth-cooldown.json` | 网易登录频控（「操作过于频繁」）后的 20 分钟冷却，重启也不重置 |
 
 > 登录态文件里的 token **等同于账号凭据**，不要发给别人；导入/导出走的是本机面板接口，面板本身仍需口令保护。
 
@@ -290,15 +331,29 @@ pid / 重启次数 / 最后错误。细节见 [packaging/netease-bot/README.md](
 
 ### 面板
 
-`npm run admin` 打开面板（11452），「网易版」页负责登录/房间/启停；「网易版（机器人 · 事件桥）」卡片会显示：
+`npm run admin` 打开面板（11452）。左栏「网易版」页负责登录 / 房间 / 启停，「网易版（机器人 · 事件桥）」卡片会显示：
 
 ```
 事件桥已连接 · 机器人 xxx · 服务器 x.x.x.x:xxxx · 协议 898（1.21.130）
 ```
 
+页面上和进服相关的按钮/输入：
+
+| 位置 | 内容 |
+|---|---|
+| 账号卡片 | 账号、密码、「登录」「短信验证码登录」「退出登录」、`同时登录 PE 通道` 勾选框（默认关） |
+| 登录态 | 「导出登录态」「导入登录态」「刷新登录态」「PE 通道登录」「清除保存」 |
+| 房间 | 类型下拉（租赁服/联机大厅/山头服/本地联机）、房间号/名称、房间密码、进服昵称、「搜索房间」「测试房间」 |
+| 组件 | 「组件 ID」输入框 + 「领取组件」：先查归属（已拥有不再下单）→ PE 商城领取 → 自动重试一次进房 |
+| 服务 | 「启动机器人 + 网易服务」「停止」「重启」，下面是实时状态与日志 |
+| 手机 / 局域网访问 | 面板口令、开启/关闭局域网访问（远程模式用） |
+
+「测试房间」只解析房间地址、不启动引擎，排错时最省事：能返回 `ip:port` 就说明账号、房间号、密码、组件都没问题。
+联机大厅/本地联机在 PE token 过期时，这一步会先用 sauth 补一次 PE 登录（可能因为登录频控失败，日志里会写原因）。
+
 ### 使用
 
-选结构文件（`.mcstructure` / `.bdx` / `.vt` / `.schem` / `.litematic` / `.nbt`，或含这些文件的 `.mcworld` / `.zip`）→ 上传解析 → 「在网易服里导入」，自动跑三步：
+选结构文件（`.mcstructure` / `.bdx` / `.vt` / `.schem` / `.litematic` / `.schematic` / `.nbt`，或含这些文件的 `.mcworld` / `.zip`）→ 上传解析 → 「在网易服里导入」，自动跑三步：
 
 1. **放置**：按 `FB_NETEASE_RATE`（默认 5 条/秒）限速下发 `setblock` / `fill`
 2. **校验**：对表面抽样点发**幂等 setblock**（已经是目标方块算通过，缺的直接补上）
@@ -310,7 +365,7 @@ pid / 重启次数 / 最后错误。细节见 [packaging/netease-bot/README.md](
 - **指令必须限速**：突发大量指令会被判「违规游戏行为」（reason=55）踢线；默认 5 条/秒，可用 `FB_NETEASE_RATE` 调，越低越稳
 - 被踢后约 60 秒自动重连，重连后事件桥自动恢复
 - 64×64×64（约 26 万方块）按 5 条/秒要跑约 15 分钟；**先用小结构确认原点和朝向**
-- `.mcstructure` / `.bdx` / `.vt` 会带方块状态（朝向/颜色/半砖）；`.vt` 的命令方块内容会通过 `command_update` 补写，告示牌文字暂未还原；Java 投影文件（`.schem` 等）只还原方块 ID
+- `.mcstructure` / `.bdx` / `.vt` 会带方块状态（朝向/颜色/半砖）；**`.vt` 的命令方块内容**会通过 `command_update` 补写（BDX/Java 投影只还原方块），告示牌文字暂未还原
 - 网易版服务和 WS 版互不影响，可以同时跑（11454 / 11451 两个端口）
 
 ### 账号登录常见问题
@@ -323,6 +378,12 @@ pid / 重启次数 / 最后错误。细节见 [packaging/netease-bot/README.md](
 | 房间搜不到 | 房间号要填**完整数字 ID**（或房间名）；账号必须已购买/加入该租赁服 |
 | 引擎起不来 | 确认 `netease-bot/ntvector/Program.exe` 已解压（`npm run setup:netease-bot`），且系统是 Windows x64 |
 | 进服被踢、版本不符 | 用「高级 → 协议版本」覆盖，或换更新版本的 NTvector |
+| 进房回 `501 物品还未获得` | 这间房的联机专区商品没在你账号的 **PE entity** 下：报错里会给出组件 ID，填到「组件 ID」点「领取组件」（PE 商城领取，领完自动重试进房） |
+| `您的帐号在另一处登录` | 手里的 **PE token 过期**（每次 PE 登录都会顶掉旧 token）：点「PE 通道登录」再试；自动刷新失败时日志会写原因 |
+| `物品已经获得`（`code=502`） | 组件本来就在你名下，按成功处理，不用再点 |
+| `登录态已失效：请重新登录` | x19 token 被 PE 认证挤掉/过期：点一次「PE 通道登录」或重新登录，Cubeloom 也会自动用 sauth 重登一次 |
+| `操作过于频繁` | 网易登录频控：`auth-cooldown.json` 记 20 分钟冷却，期间别重复点；购买/进房另有 30 分钟 / 10 秒冷却 |
+| 本地联机「无法找到该房间」 | 房间号正确但房间已关闭/房主退出；换一个正在开着的房间号再试 |
 
 ## 下载与使用（APK / EXE / AppImage）
 
@@ -369,7 +430,7 @@ APK 有**两种运行方式**（右下角 ⚙ 随时切换）：
 2. **远程模式**：直接填电脑/服务器的面板地址（如 `http://192.168.1.10:11452/`），
    网易账号登录、房间解析、机器人进服都在那台机器上完成，手机只当遥控器。
 
-> Android 原生引擎为实验特性：已在 Waydroid x86_64（Android 13）验证引擎启动、Python 3.12、登录链路和 RakNet 连接；arm64 真机与“进服后事件桥导入”还需要用真实租赁服账号验证。APK 约 70 MB（含 Node 运行时、Python 3.12、两种 ABI 的引擎）。
+> Android 原生引擎为实验特性：已在 Waydroid x86_64（Android 13）验证引擎启动、Python 3.12、登录链路和 RakNet 连接；arm64 真机与「进服后事件桥导入」还需要用真实租赁服账号验证。当前 release APK 约 **60 MB**（versionCode 32 / 0.1.34，含 Node 18 运行时、Python 3.12、两种 ABI 的引擎与 Go 登录助手）。
 
 远程模式对方要允许局域网访问（面板里点一下就行）：
 
@@ -389,6 +450,8 @@ FB_ADMIN_HOST=0.0.0.0 npm run admin   # 必须先有 admin/auth.json 口令，�
 ### 从源码构建
 
 ```bash
+npm install            # tsx / esbuild / 测试依赖
+npm run build:x19login # 网易登录助手（Go，本机版；Android 侧另编 libx19login.so）
 npm run build          # server / desktop / portable / mobile bundle
 npm run build:engine   # Linux/macOS 原生网易引擎（不用 Wine；CI 会自动跑）
 npm run build:engine:android  # Android arm64/x86_64 原生引擎（Chaquopy Python 3.12）
@@ -396,6 +459,10 @@ npm run dist:linux     # AppImage；Windows/macOS 用 dist:win / dist:mac
 npm run build:android  # release APK（自动生成本地 keystore；可用 CUBELOOM_KEYSTORE 指定）
 npm run build:android -- --debug  # debug APK（开发用）
 ```
+
+> 打 APK 需要 **Gradle 8.13**（AGP 8.12 不兼容 Gradle 9.x）：`GRADLE_BIN=/path/to/gradle-8.13/bin/gradle npm run build:android`；
+> Android 原生引擎另需 NDK 27（`ANDROID_NDK_HOME`）与 Go 的 android/amd64、android/arm64 目标。
+> `build:android` 每次都会重新打 `build/mobile` bundle（以前按「已存在就跳过」导致 APK 里是旧面板/旧服务端）。
 
 ## 安全说明
 
@@ -409,7 +476,7 @@ npm run build:android -- --debug  # debug APK（开发用）
 - 反向代理/隧道（cloudflared、nginx、frp）转发进来的连接即使远端显示为 `127.0.0.1`，只要带 `X-Forwarded-For` / `X-Real-IP` / `CF-Connecting-IP` 就按外部连接处理，必须 `--login`
 - 要让所有来源都免验证（不推荐）：`FB_ALLOW_ANON=1`
 
-自测：`npm run check:sandbox`（39 项断言）+ `npm test`（87 条：沙箱逃逸/修补器/坐标契约/格式解析/鉴权/发送队列/网易桥/托管机器人/网易登录签名与房间解析）。
+自测：`npm run check:sandbox`（39 项断言）+ `npm test`（113 条：沙箱逃逸/修补器/坐标契约/格式解析/鉴权/发送队列/网易桥/托管机器人/网易登录签名与房间解析/PE 通道凭据）。
 
 
 ## 目录
@@ -419,12 +486,12 @@ main.ts              WS 服务
 admin-server.ts      本地管理面板
 cli.mjs              终端交互版
 netease-service.ts   网易版事件桥
-src/                 结构解析 / NBT / 格式 / 沙箱 / 会话 / 发送队列 / 网易桥 / 网易登录与房间解析
+src/                 结构解析（BDX/VT/ZIP/Java NBT）/ 沙箱 / 会话 / 发送队列 / 网易桥 / 网易登录（x19 + PE）与房间解析
 admin/               面板前端（原生 HTML/CSS/JS，无构建）
 packaging/           desktop（Electron）/ android（APK）/ mobile / portable / netease-bot
 vendor/ntvector/     随仓库分发的网易机器人（MIT，含校验值）
 tools/x19login/      网易账号登录助手（Go，含 NeteaseLogin 的 MIT 副本）
-test/                回归测试（node --test，74 条）
+test/                回归测试（node --test，113 条）
 tools/               构建、打包、自测脚本
 deploy/              systemd 单元模板
 tsconfig.json        类型检查配置（npm run typecheck）
@@ -432,17 +499,22 @@ tsconfig.json        类型检查配置（npm run typecheck）
 
 ## 已知限制
 
-- `@pureeval/voxel-geometry` 锁在 `1.2.10`：该版本 npm 元数据里没有 `license` 字段，许可依据只能看源码仓库的 LICENSE
 - 落块层每块发一条 `setblock`，十万级结构会产生同等数量的命令；要提速可以合并成 `fill`，但那会改变与服务器交互的节奏，暂未做
 - 网易登录助手内的 mpay 实现来自 [NeteaseLogin](https://github.com/DHY0627/NeteaseLogin)（MIT），已随仓库 vendor
 - 管理面板为单实例本地工具，没有账户体系；若要多人使用请自行加反代与访问控制
+- 网易同一账号的 PC 会话与 PE 会话互斥：面板「同时登录 PE 通道」默认关闭，需要领 PE 商城组件时再手动开
+- `.vt` 的告示牌文字、BDX 的命令方块内容尚未还原；`.schem` 等 Java 投影只还原方块 ID
+- 组件领取必须走 PE 通道（联机专区是 PE 商城商品，归属记在 PE entity 上）；PE 登录有频控，短时间反复「领取组件」会被网易按「操作过于频繁」拦住，等 20 分钟即可
+- 联机大厅/本地联机启动引擎时用的是 PE 的 `--UserID/--MD5Token`；这条路径的进服实测还缺一个真实开着的房间（HTTP 层已验证能拿到地址）
 
 ## 贡献
 
 提交前请跑：
 
 ```bash
-npm run check:sandbox
+npm run check:sandbox   # 39 项断言
+npm test                # 113 条
+npm run typecheck
 ```
 
 Issue / PR 都欢迎。涉及许可证或上游署名变更的改动，请在 PR 描述里说明理由。

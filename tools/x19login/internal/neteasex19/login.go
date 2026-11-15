@@ -49,6 +49,13 @@ type Options struct {
 
 	// OnNotice 调试回调, 会上报设备注册、上行短信等关键步骤
 	OnNotice func(message string)
+
+	// PeLogin 在 x19 登录成功后再做一次 PE 通道认证 (默认开启)。
+	// PE 接口 (/pe-purchase-item/ 等) 只认 PE 通道的 token, 拿 PC token 去调用会回「参数错误」。
+	PeLogin bool
+
+	// PeCachePath 设备缓存文件路径, 仅用于把 PE 设备 id 存在同目录 (pe-udid.txt)
+	PeCachePath string
 }
 
 // Option 登录选项构造函数
@@ -116,6 +123,16 @@ func WithNoticeHandler(f func(message string)) Option {
 	return func(o *Options) { o.OnNotice = f }
 }
 
+// WithPeLogin 控制是否在 x19 登录后补一次 PE 通道认证
+func WithPeLogin(enabled bool) Option {
+	return func(o *Options) { o.PeLogin = enabled }
+}
+
+// WithPeCacheFile 指定 PE 设备 id 的存放位置 (默认与设备缓存同目录)
+func WithPeCacheFile(path string) Option {
+	return func(o *Options) { o.PeCachePath = path }
+}
+
 func newOptions(opts []Option) *Options {
 	o := &Options{
 		Project:     defaultProject,
@@ -123,6 +140,7 @@ func newOptions(opts []Option) *Options {
 		SDKVersion:  defaultSDKVersion,
 		SmsInterval: 5 * time.Second,
 		SmsRetry:    24,
+		PeLogin:     true,
 	}
 	for _, fn := range opts {
 		if fn != nil {
@@ -385,6 +403,20 @@ func loginWithCookie(ctx context.Context, cookie *SauthCookie, opt *Options) (*S
 	session := newSession(entity, x19)
 	if session.ID == 0 {
 		return nil, errors.New("登录成功但 entity_id 为空")
+	}
+	session.sauth = cookie
+
+	// PE 通道认证失败不影响 x19 token 可用性: 只记录错误, 由调用方决定要不要提示
+	if opt.PeLogin {
+		pe, peErr := PeLogin(ctx, cookie, x19.Client, opt.PeCachePath)
+		if peErr != nil {
+			session.PeError = peErr.Error()
+			opt.notice("PE 通道认证失败（PC 登录仍然可用）：" + peErr.Error())
+		} else {
+			session.PeEntityID = pe.EntityID
+			session.PeToken = pe.Token
+			opt.notice("PE 通道认证成功")
+		}
 	}
 	return session, nil
 }

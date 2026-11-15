@@ -35,7 +35,11 @@ function run(cmd, args, opts = {}) {
 
 function ensureMobileBuild() {
   const src = path.join(ROOT, "build", "mobile", "nodejs-project");
-  if (!fs.existsSync(path.join(src, "admin-server.cjs"))) {
+  // 每次打 APK 都重打 bundle：以前按「admin-server.cjs 存在就跳过」，
+  // 结果改了面板/服务端代码后 APK 里还是旧的一份，排查时会白白怀疑人生。
+  if (process.env.FB_SKIP_MOBILE_BUILD === "1") {
+    console.log("跳过 mobile bundle 构建（FB_SKIP_MOBILE_BUILD=1）");
+  } else {
     console.log("构建 mobile bundle …");
     run(process.execPath, [path.join(ROOT, "tools", "build.mjs")], { env: { ...process.env, FB_SKIP_X19LOGIN: "1" } });
   }

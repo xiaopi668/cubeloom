@@ -287,6 +287,10 @@
         <button class="btn small ghost" id="nte-sms-mode">短信验证码登录</button>
         <button class="btn small ghost" id="nte-logout">退出登录</button>
       </div>
+      <label class="log-info" style="display:flex;align-items:center;gap:6px;margin-top:8px;white-space:normal">
+        <input id="nte-pe-toggle" type="checkbox" />
+        同时登录 PE（基岩版）通道 —— 默认关闭：登录时多做一次 PE 认证会占用一次网易登录频控额度；联机大厅/本地联机需要 PE 时，点「领取组件」「测试房间」会自动用 sauth 补一次
+      </label>
       <div id="nte-sms-row" class="sl-row" style="display:none;margin-top:8px">
         <input id="nte-sms-code" type="text" placeholder="短信验证码" inputmode="numeric" />
         <button class="btn small" id="nte-sms-submit">提交验证码</button>
@@ -299,6 +303,7 @@
         <button class="btn small ghost" id="nte-session-export">导出登录态</button>
         <button class="btn small ghost" id="nte-session-import">导入登录态</button>
         <button class="btn small ghost" id="nte-session-refresh">刷新登录态</button>
+        <button class="btn small ghost" id="nte-session-pe">PE 通道登录</button>
         <button class="btn small ghost" id="nte-session-clear">清除保存</button>
         <input id="nte-session-file" type="file" accept=".json,application/json" style="display:none" />
       </div>
@@ -311,7 +316,7 @@
           <option value="rental">租赁服（RentalGame）</option>
           <option value="lobby">联机大厅（LobbyGame）</option>
           <option value="realms">山头服（DomainGame）</option>
-          <option value="local">本地联机（直连 IP）</option>
+          <option value="local">本地联机（房间号）</option>
         </select>
         <input id="nte-display" type="text" placeholder="进服昵称（默认用账号昵称）" />
       </div>
@@ -322,7 +327,12 @@
           <input id="nte-room-pass" type="password" placeholder="房间密码（可空）" />
         </div>
         <div class="sl-row" style="margin-top:8px">
+          <input id="nte-component-id" type="text" placeholder="组件 ID（进房 501 时填这里，手动领取）" style="flex:1" />
+          <button class="btn small ghost" id="nte-component-claim">领取组件</button>
+        </div>
+        <div class="sl-row" style="margin-top:8px">
           <button class="btn small" id="nte-room-search">搜索房间</button>
+          <button class="btn small ghost" id="nte-probe">测试房间</button>
         </div>
         <div class="log-info" id="nte-room-list" style="margin-top:8px; white-space:normal"></div>
       </div>
@@ -346,7 +356,9 @@
         </div>
         <div class="log-info" style="margin-top:8px">
           本地联机填房间号即可（不是 IP）：按房间号直接进房，再取服务器地址启动机器人。
-          带模组（组件）的房间会自动领取组件后重试。
+          如果房间绑了联机专区组件（网易回 501「物品还未获得」），报错里会给出组件 ID，填到上面的
+          「组件 ID」里手动点「领取组件」。联机专区是 PE 商城商品（channel_id=5），领取和进房都走
+          PE 通道；提示「您的帐号在另一处登录」时点「PE 通道登录」再领一次。
         </div>
       </div>
 
@@ -864,6 +876,15 @@
   const NTE_ACTIVE = ["starting", "need_sms", "need_upstream", "need_password"];
   let nteLoginTimer = null;
   let nteLoginState = { status: "idle" };
+  /** 搜索选中的联机大厅房间（带 manifest/res_id，启动时直接进房，不再搜索） */
+  let nteSelectedRoom = null;
+
+  function expHint(ts) {
+    if (!ts) return "";
+    const left = ts - Date.now();
+    if (left <= 0) return "有效期已过";
+    return `有效期剩 ${Math.max(1, Math.round(left / 60000))} 分钟`;
+  }
 
   function nteRenderLogin(login) {
     nteLoginState = login || { status: "idle" };
@@ -879,6 +900,9 @@
       stateEl.textContent =
         `已登录：${nteLoginState.name || "（无昵称）"}（uid ${nteLoginState.entityId || "—"}）` +
         (exp ? ` · 有效期到 ${exp}` : "") +
+        (nteLoginState.pe
+          ? ` · PE 通道就绪${nteLoginState.peAgeSec >= 0 ? `（${Math.round(nteLoginState.peAgeSec / 60)} 分钟前刷新）` : ""}`
+          : " · PE 通道未就绪（领取组件会失败，重新登录一次即可）") +
         (notes ? ` · ${notes}` : "");
     } else if (st === "error") {
       stateEl.textContent = `登录失败：${nteLoginState.error || "未知错误"}${notes ? ` · ${notes}` : ""}`;
@@ -893,12 +917,24 @@
         (nteLoginState.sms?.hint ? `（网易提示：${nteLoginState.sms.hint}）` : "");
     } else if (st === "need_password") {
       stateEl.textContent = "需要密码，请在密码框填写后重新点「登录」";
+    } else if (st === "idle" && nteLoginState.entityId) {
+      stateEl.textContent =
+        `已恢复登录态：uid ${nteLoginState.entityId}` +
+        (nteLoginState.name ? `（${nteLoginState.name}）` : "") +
+        (nteLoginState.pe ? " · PE 通道就绪" : " · PE 通道未就绪（需要时点「PE 通道登录」）") +
+        (expHint(nteLoginState.expiresAt) ? ` · ${expHint(nteLoginState.expiresAt)}` : "");
     } else if (st === "starting") {
       stateEl.textContent = `登录中…（设备注册/风控校验可能需要几秒）${notes ? ` · ${notes}` : ""}`;
     } else {
       const hint = nteLoginState.binary === false ? "（缺少登录助手：先运行 npm run build:x19login）" : "";
       stateEl.textContent = `未登录${hint}`;
     }
+  }
+
+  /** 手动拉一次登录态并刷新显示（领取组件 / PE 通道登录之后用） */
+  async function nteFetchLogin() {
+    const r = await api("/api/netease-service/login");
+    if (r && r.ok) nteRenderLogin(r.login);
   }
 
   function ntePollLogin() {
@@ -932,7 +968,13 @@
       return;
     }
     $("nte-login-state").textContent = "登录中…";
-    const r = await post("/api/netease-service/login", { account, password: mode === "sms" ? "" : password, mode });
+    const peToggle = $("nte-pe-toggle");
+    const r = await post("/api/netease-service/login", {
+      account,
+      password: mode === "sms" ? "" : password,
+      mode,
+      pe: peToggle ? peToggle.checked : true,
+    });
     if (!r || !r.ok) {
       $("nte-login-state").textContent = (r && r.error) || "登录请求失败";
       return;
@@ -983,6 +1025,7 @@
       roomKind: $("nte-room-kind").value,
       localRoom: $("nte-local-room").value.trim(),
       localPassword: $("nte-local-pass").value,
+      componentId: $("nte-component-id").value.trim(),
       displayName: $("nte-display").value.trim(),
       engineVersion: $("nte-engine-ver").value.trim(),
       patchVersion: $("nte-patch-ver").value.trim(),
@@ -1013,6 +1056,7 @@
     $("nte-room-kind").value = ["lobby", "realms", "local"].includes(c.roomKind) ? c.roomKind : "rental";
     $("nte-local-room").value = c.localRoom || "";
     $("nte-local-pass").value = c.localPassword || "";
+    $("nte-component-id").value = c.componentId || c.localResId || "";
     $("nte-display").value = c.displayName || "";
     nteUpdateRoomKind();
     $("nte-engine-ver").value = c.engineVersion || "";
@@ -1064,12 +1108,78 @@
       btn.style.margin = "0 6px 6px 0";
       btn.textContent = `${room.name}（${room.entityId}）${room.hasPwd ? " 🔒" : ""} · ${room.playerCount}/${room.capacity}`;
       btn.onclick = () => {
+        nteSelectedRoom = room;
         $("nte-room").value = room.entityId;
-        nteSaveAccount({ room: room.entityId });
-        $("nte-room-list").textContent = `已选择：${room.name}（${room.entityId}）`;
+        // 房间列表里的 res_id 就是组件 ID，选中后直接填好，501 时一点就能领
+        if (room.resId) $("nte-component-id").value = room.resId;
+        nteSaveAccount({ room: room.entityId, componentId: room.resId || $("nte-component-id").value.trim() });
+        $("nte-room-list").textContent =
+          `已选择：${room.name}（${room.entityId}）` + (room.resId ? ` · 组件 ${room.resId}` : "");
       };
       box.appendChild(btn);
     }
+  }
+
+  /** 手动领取联机专区组件：只在用户点按钮时发请求，进房流程不会自己领 */
+  async function nteClaimComponent() {
+    const itemId = $("nte-component-id").value.trim();
+    if (!itemId) {
+      $("nte-svc-state").textContent = "先填组件 ID（进房报 501 时，报错里会给出这个 ID）";
+      return;
+    }
+    $("nte-svc-state").textContent = `正在领取组件 ${itemId}…（联机专区走 PE 商城）`;
+    const r = await post("/api/netease-service/purchase", { itemId });
+    if (r && r.ok) {
+      const head = r.alreadyOwned ? `组件 ${itemId} 之前就已经拥有` : `组件 ${itemId} 领取成功`;
+      const tail =
+        r.retry && r.retry.ok
+          ? `，房间已能进：${r.retry.host}:${r.retry.port}`
+          : r.retry && r.retry.error
+            ? `；进房重试：${r.retry.error}`
+            : "";
+      $("nte-svc-state").textContent = `${head}${tail}。现在点「测试房间」或「启动」进房`;
+      nteSaveAccount({ componentId: itemId });
+      nteFetchLogin().catch(() => {});
+    } else {
+      const msg = (r && r.error) || "领取失败";
+      $("nte-svc-state").textContent = /另一处登录/.test(msg)
+        ? `${msg}（本机没有 sauth 时无法自动刷新，去「登录态」那一栏点「PE 通道登录」）`
+        : msg;
+    }
+    addEntry("领取组件", r);
+  }
+
+  /** 只解析房间地址、不启动引擎：排查进房失败（501 / 密码错 / 地址为空）用 */
+  async function nteProbeRoom() {
+    const kind = $("nte-room-kind").value;
+    const body = { roomKind: kind, mode: "account" };
+    if (kind === "local") {
+      body.localRoom = $("nte-local-room").value.trim();
+      body.localPassword = $("nte-local-pass").value;
+      body.localResId = $("nte-component-id").value.trim();
+    } else if (kind === "realms") {
+      body.keyword = $("nte-realms-sid").value.trim();
+    } else {
+      body.keyword = $("nte-room").value.trim();
+      body.roomPassword = $("nte-room-pass").value;
+      if (kind === "lobby" && nteSelectedRoom && String(nteSelectedRoom.entityId) === body.keyword) {
+        body.roomEntityId = nteSelectedRoom.entityId;
+        body.roomName = nteSelectedRoom.name;
+        body.lobbyManifestVersion = nteSelectedRoom.lobbyManifestVersion || "";
+        body.resId = nteSelectedRoom.resId || "";
+      }
+    }
+    $("nte-svc-state").textContent = "正在解析房间地址…";
+    const r = await post("/api/netease-service/probe", body);
+    if (r && r.ok) {
+      const room = r.room || {};
+      $("nte-svc-state").textContent = `房间可用：${room.name || room.entityId} → ${room.host}:${room.port}`;
+      if (r.login) nteRenderLogin(r.login);
+    } else {
+      $("nte-svc-state").textContent = (r && r.error) || "解析失败";
+      if (r && r.login) nteRenderLogin(r.login);
+    }
+    addEntry("测试房间", r);
   }
 
   async function nteServiceAction(action, extra) {
@@ -1081,11 +1191,22 @@
       if (kind === "local") {
         body.localRoom = $("nte-local-room").value.trim();
         body.localPassword = $("nte-local-pass").value;
+        body.localResId = $("nte-component-id").value.trim();
       } else if (kind === "realms") {
         body.keyword = $("nte-realms-sid").value.trim();
       } else {
         body.keyword = $("nte-room").value.trim();
         body.roomPassword = $("nte-room-pass").value;
+        if (
+          kind === "lobby" &&
+          nteSelectedRoom &&
+          String(nteSelectedRoom.entityId) === body.keyword
+        ) {
+          body.roomEntityId = nteSelectedRoom.entityId;
+          body.roomName = nteSelectedRoom.name;
+          body.lobbyManifestVersion = nteSelectedRoom.lobbyManifestVersion || "";
+          body.resId = nteSelectedRoom.resId || "";
+        }
       }
     }
     $("nte-svc-state").textContent = action === "stop" ? "停止中…" : "启动中（解析房间地址 + 拉起引擎）…";
@@ -1206,15 +1327,46 @@
       $("nte-session-state").textContent = "导出失败：" + ((r && r.error) || "当前没有登录态");
       return;
     }
-    const blob = new Blob([JSON.stringify(r.session, null, 2)], { type: "application/json" });
+    const text = JSON.stringify(r.session, null, 2);
+    const filename = `cubeloom-netease-session-${r.session.entity_id}.json`;
+
+    // Android 壳：弹系统“另存为”窗口（ACTION_CREATE_DOCUMENT）
+    if (window.CubeloomNative && typeof window.CubeloomNative.saveText === "function") {
+      window.CubeloomNative.saveText(filename, text);
+      $("nte-session-state").textContent = "已打开保存窗口，选择位置即可（含 token，请妥善保管）";
+      return;
+    }
+
+    // 桌面 Chromium：弹文件保存选择器
+    if (typeof window.showSaveFilePicker === "function") {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: "JSON", accept: { "application/json": [".json"] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(text);
+        await writable.close();
+        $("nte-session-state").textContent = "已保存登录态文件（含 token，请妥善保管）";
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") {
+          $("nte-session-state").textContent = "已取消导出";
+          return;
+        }
+        // 其他错误落回下载
+      }
+    }
+
+    const blob = new Blob([text], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `cubeloom-netease-session-${r.session.entity_id}.json`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    $("nte-session-state").textContent = "已导出登录态文件（含 token，请妥善保管）";
+    $("nte-session-state").textContent = "已下载到浏览器默认下载目录（Android 通常在 Download）";
   }
 
   async function nteSessionImport(file) {
@@ -1247,6 +1399,17 @@
     nteRenderLogin(r.login);
   }
 
+  async function nteSessionPe() {
+    $("nte-session-state").textContent = "正在走 PE（基岩版）认证…";
+    const r = await post("/api/netease-service/session/pe", {});
+    if (!r || !r.ok) {
+      $("nte-session-state").textContent = "PE 通道认证失败：" + ((r && r.error) || "未知原因");
+      return;
+    }
+    $("nte-session-state").textContent = "PE 通道已就绪";
+    nteRenderLogin(r.login);
+  }
+
   async function nteSessionClear() {
     const r = await post("/api/netease-service/session/clear", {});
     $("nte-session-state").textContent = r && r.ok ? "已清除保存的登录态" : "清除失败";
@@ -1260,6 +1423,9 @@
     input.value = "";
   };
   $("nte-session-refresh").onclick = nteSessionRefresh;
+  $("nte-session-pe").onclick = nteSessionPe;
+  $("nte-probe").onclick = nteProbeRoom;
+  $("nte-component-claim").onclick = nteClaimComponent;
   $("nte-session-clear").onclick = nteSessionClear;
 
   /* ---- 高级：mc.cfg 旧方式 ---- */
@@ -1349,8 +1515,14 @@
   $("nte-svc-start").onclick = () => nteServiceAction("start");
   $("nte-svc-stop").onclick = () => nteServiceAction("stop");
   $("nte-svc-restart").onclick = () => nteServiceAction("restart");
-  for (const id of ["nte-acct", "nte-room", "nte-room-pass", "nte-room-kind", "nte-local-room", "nte-local-pass", "nte-display", "nte-engine-ver", "nte-patch-ver", "nte-protocol", "nte-lobby-version"]) {
-    $(id).addEventListener("change", () => nteSaveAccount({}));
+  for (const id of ["nte-acct", "nte-room", "nte-room-pass", "nte-room-kind", "nte-local-room", "nte-local-pass", "nte-component-id", "nte-display", "nte-engine-ver", "nte-patch-ver", "nte-protocol", "nte-lobby-version"]) {
+    $(id).addEventListener("change", () => {
+      if (id === "nte-room" && nteSelectedRoom && $("nte-room").value.trim() !== String(nteSelectedRoom.entityId)) {
+        nteSelectedRoom = null;
+      }
+      if (id === "nte-room-kind") nteSelectedRoom = null;
+      nteSaveAccount({});
+    });
   }
   document.getElementById("nte-cfg-file").onchange = (ev) => {
     const input = ev.target;

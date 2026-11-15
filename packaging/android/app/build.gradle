@@ -9,8 +9,8 @@ android {
         applicationId 'io.github.cubeloom'
         minSdk 24
         targetSdk 36
-        versionCode 33
-        versionName '0.1.35'
+        versionCode 34
+        versionName '0.2.0'
 
         ndk {
             // 真机主要 arm64；x86_64 给模拟器

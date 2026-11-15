@@ -3,7 +3,9 @@
 版本号在 `package.json`（`version`）和 `packaging/android/app/build.gradle`（`versionName` / `versionCode`）两处同步。
 0.1.6 之前有 git tag（`v0.1.2` … `v0.1.6`）；之后按功能批次归纳，逐条提交见 GitHub 提交历史。
 
-## 0.1.35
+## 0.2.0
+
+> 版本号从 0.1.x 跳到 0.2.0：组件领取（PE 通道）这条主链路打通，按语义化版本给到 0.2。
 
 **联机专区组件领取打通（实测 `code=0`，进房拿到地址）**
 

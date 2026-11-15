@@ -384,7 +384,9 @@ async function startImport(st: ParsedStructure, offsetY: number): Promise<{ ok: 
   const pos = await bridge.getPosition();
   if (!pos) return { ok: false, error: "拿不到机器人坐标" };
   const origin = { x: Math.floor(pos.x), y: Math.floor(pos.y) + Math.trunc(offsetY), z: Math.floor(pos.z) };
-  const cmds = structureCommands(st, origin, 0);
+  // 网易服也走同一套 3D 合块；单条 fill 体积可用 FB_NETEASE_FILL_MAX 调小（避免跨区块的大 fill）
+  const fillMax = Math.max(1, Number(process.env.FB_NETEASE_FILL_MAX || process.env.FB_FILL_MAX || "") || 32768);
+  const cmds = structureCommands(st, origin, 0, { maxFillVolume: fillMax });
   const meta = (st.commandBlocks ?? []).map((cb) => ({
     x: origin.x + cb.x,
     y: origin.y + cb.y,

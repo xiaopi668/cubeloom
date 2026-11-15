@@ -87,8 +87,11 @@ test("P1-7：同名字同状态才合并成 fill，状态不同各自 setblock",
   const parsed = parseMcStructure(buf, "mixed");
   const cmds = structureCommands(parsed, { x: 0, y: 0, z: 0 }, 0);
   assert.equal(cmds.length, 4, "方向不同不能合并");
-  assert.ok(cmds[0].command.includes('["minecraft:cardinal_direction"="north"]'), cmds[0].command);
-  assert.ok(cmds[1].command.includes('["minecraft:cardinal_direction"="south"]'), cmds[1].command);
+  // 按方块分组输出：north 两条在前、south 两条在后（顺序不影响放置结果）
+  const north = cmds.filter((c) => c.command.includes('"north"'));
+  const south = cmds.filter((c) => c.command.includes('"south"'));
+  assert.equal(north.length, 2);
+  assert.equal(south.length, 2);
 
   // 连续同状态 → 一条 fill，count 是方块数，状态后缀跟在方块字段后面
   const same = makeStructureEx({

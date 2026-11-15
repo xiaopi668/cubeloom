@@ -11,6 +11,26 @@ import assert from "node:assert/strict";
 import { parseMcStructure, structureCommands } from "../src/structure";
 import { makeStructure } from "./helpers";
 
+/** 把 fill / setblock 命令还原成方块坐标集合，用于校验覆盖范围 */
+function expandCommands(cmds: Array<{ command: string }>): Set<string> {
+  const out = new Set<string>();
+  for (const c of cmds) {
+    const f = /^fill (-?\d+) (-?\d+) (-?\d+) (-?\d+) (-?\d+) (-?\d+)/.exec(c.command);
+    if (f) {
+      const [x1, y1, z1, x2, y2, z2] = f.slice(1, 7).map(Number);
+      for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
+        for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y++) {
+          for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z++) out.add(`${x},${y},${z}`);
+        }
+      }
+      continue;
+    }
+    const b = /^setblock (-?\d+) (-?\d+) (-?\d+)/.exec(c.command);
+    if (b) out.add(`${Number(b[1])},${Number(b[2])},${Number(b[3])}`);
+  }
+  return out;
+}
+
 const st = (blocks: Array<{ x: number; y: number; z: number; block: string }>) => ({
   name: "t",
   size: { x: Math.max(...blocks.map((b) => b.x)) + 1, y: Math.max(...blocks.map((b) => b.y)) + 1, z: Math.max(...blocks.map((b) => b.z)) + 1 },
@@ -50,14 +70,56 @@ test("回读坐标与命令坐标一致：world(p) 只加一次偏移", () => {
   ];
   const s = st(blocks);
   const cmds = structureCommands(s, origin, offsetY);
-  const fromCommands = cmds.map((c) => {
-    const m = /^(?:setblock|fill) (-?\d+) (-?\d+) (-?\d+)/.exec(c.command);
-    assert.ok(m, c.command);
-    return { x: Number(m![1]), y: Number(m![2]), z: Number(m![3]) };
-  });
+  // 相邻两块现在会合成一条 fill
+  assert.equal(cmds.length, 1, cmds.map((c) => c.command).join(" | "));
+  assert.equal(cmds[0].command, "fill 100 71 -20 101 71 -20 minecraft:stone");
   // main.ts verifyStructure 里的 world()：origin.x + p.x, origin.y + p.y + offsetY, origin.z + p.z
   const world = blocks.map((p) => ({ x: origin.x + p.x, y: origin.y + p.y + offsetY, z: origin.z + p.z }));
-  assert.deepEqual(fromCommands, world);
+  const cells = expandCommands(cmds);
+  assert.deepEqual([...cells].sort(), world.map((p) => `${p.x},${p.y},${p.z}`).sort());
+});
+
+test("3D 合块：实心立方体一条 fill 覆盖", () => {
+  const blocks: Array<{ x: number; y: number; z: number; block: string }> = [];
+  for (let x = 0; x < 4; x++) {
+    for (let y = 0; y < 4; y++) {
+      for (let z = 0; z < 4; z++) blocks.push({ x, y, z, block: "minecraft:stone" });
+    }
+  }
+  const cmds = structureCommands(st(blocks), { x: 0, y: 0, z: 0 }, 0);
+  assert.equal(cmds.length, 1, cmds.map((c) => c.command).join(" | "));
+  assert.equal(cmds[0].command, "fill 0 0 0 3 3 3 minecraft:stone");
+  assert.equal(cmds[0].count, 64);
+});
+
+test("超过单条 fill 上限时自动切片，总量不丢", () => {
+  const blocks: Array<{ x: number; y: number; z: number; block: string }> = [];
+  for (let x = 0; x < 8; x++) {
+    for (let y = 0; y < 8; y++) {
+      for (let z = 0; z < 8; z++) blocks.push({ x, y, z, block: "minecraft:stone" });
+    }
+  }
+  const cmds = structureCommands(st(blocks), { x: 0, y: 0, z: 0 }, 0, { maxFillVolume: 64 });
+  assert.ok(cmds.length > 1, "应该被切成多条");
+  assert.equal(cmds.reduce((n, c) => n + c.count, 0), 512);
+  for (const c of cmds) assert.ok(c.count <= 64, `${c.command} -> ${c.count}`);
+  assert.equal(expandCommands(cmds).size, 512, "切片后覆盖范围不变");
+});
+
+test("混合方块 + 空腔：fill 覆盖范围与原始方块集合完全一致", () => {
+  const blocks: Array<{ x: number; y: number; z: number; block: string }> = [];
+  for (let x = 0; x < 6; x++) {
+    for (let y = 0; y < 6; y++) {
+      for (let z = 0; z < 6; z++) {
+        if ((x + y + z) % 3 === 0) continue; // 挖空一部分
+        blocks.push({ x, y, z, block: (x + y) % 2 === 0 ? "minecraft:stone" : "minecraft:oak_planks" });
+      }
+    }
+  }
+  const cmds = structureCommands(st(blocks), { x: 0, y: 0, z: 0 }, 0);
+  const cells = expandCommands(cmds);
+  assert.equal(cells.size, blocks.length, "不能多放也不能少放");
+  assert.equal(cmds.reduce((n, c) => n + c.count, 0), blocks.length);
 });
 
 test("索引 → 坐标映射：z 变化最快", () => {

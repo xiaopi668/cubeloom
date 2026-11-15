@@ -190,7 +190,8 @@ systemctl restart cubeloom
 - `.mcstructure` 按 `block_indices`（ZYX 顺序，z 变化最快）解析，忽略 `air` 与 `-1` 空位
 - `.mcstructure` / `.bdx` / `.vt` 会还原方块状态；`.schem` / `.litematic` 等 Java 投影只还原方块 ID
 - `.vt` 用 `VTVB` + AES-256-CBC + Deflate；命令方块内容通过网易桥 `command_update` 补写，告示牌文字暂未还原
-- 沿 z 轴把连续同方块合并成 `fill` 命令，命令数大幅减少（例：156 方块 → 58 条命令）
+- 放置命令做 **3D 贪心合块**（先沿 z 拉线 → 沿 x 扩面 → 沿 y 堆体），同名字同状态的实心区域一条 `fill` 覆盖；16³ 实心 = 1 条命令，64³ = 8 条（旧版沿 z 合并时 64³ 要 4096 条）
+- 单条 `fill` 默认最多 32768 方块（协议上限），超过自动切片；`FB_FILL_MAX` / `FB_NETEASE_FILL_MAX` 可调小
 - 每批 60 条命令、间隔 40ms；每 250ms 更新一次 actionbar 进度
 - 单次上限 50 万方块（64×64×64=26 万方块约 4096 条 fill 命令）；上传文件上限约 64MB
 

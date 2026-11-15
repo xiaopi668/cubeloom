@@ -320,7 +320,9 @@ function startStructureBuild(offsetY: number) {
     y: Math.round(s.setting.origin?.y ?? 0),
     z: Math.round(s.setting.origin?.z ?? 0),
   };
-  const cmds: StructureCmd[] = structureCommands(st, origin, Math.trunc(offsetY) || 0);
+  // 大块区域合成 fill：单条最多多少方块可用 FB_FILL_MAX 调（默认 32768，即 /fill 上限）
+  const fillMax = Math.max(1, Number(process.env.FB_FILL_MAX ?? "") || 32768);
+  const cmds: StructureCmd[] = structureCommands(st, origin, Math.trunc(offsetY) || 0, { maxFillVolume: fillMax });
   lastBuild = { st, origin, offsetY: Math.trunc(offsetY) || 0 };
 
   build = {

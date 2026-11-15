@@ -201,49 +201,152 @@ export function parseMcStructure(buf: Buffer, name: string): ParsedStructure {
   };
 }
 
+/** 单个 fill 的方块数上限（Bedrock /fill 上限 32768） */
+const FILL_LIMIT = 32768;
+
+export type StructureCommandOptions = {
+  /**
+   * 单个 fill 命令最多放多少方块（默认 32768，Bedrock 的 /fill 上限）。
+   * 设成 1 就等于退回「每块一条 setblock」。
+   */
+  maxFillVolume?: number;
+};
+
+type Box = { x1: number; y1: number; z1: number; x2: number; y2: number; z2: number };
+
 /**
- * 生成放置命令：沿 z 轴把连续同方块合并成 fill，显著减少命令数
+ * 生成放置命令：按方块做 **3D 贪心合块**，大块区域用一条 fill 命令覆盖。
+ *
+ * 以前只沿 z 轴合并成 1×1×N 的细条，大平面上命令数还是等于行数；
+ * 现在先沿 z 长大，再沿 x 扩成平面，最后沿 y 堆成方块体，一个 16×16×16 的实心区
+ * 只需要 1 条 fill（体积超过 /fill 上限时自动切片）。
+ *
  * @param origin 放置原点（世界坐标，对应结构局部坐标 0,0,0）
  * @param offsetY Y 方向额外偏移
+ * @param opts   maxFillVolume：单条 fill 的方块上限
  *
  * 注意：b.block 可能已经带 `["state"=值]` 后缀（P1-7），这里原样拼接，
- * 合并条件是「完整方块字符串相同」，所以同名字同状态才合并。
+ * 合并条件是「完整方块字符串相同」，所以同名字同状态才会合到同一个块里。
  */
 export function structureCommands(
   st: ParsedStructure,
   origin: { x: number; y: number; z: number },
-  offsetY = 0
+  offsetY = 0,
+  opts: StructureCommandOptions = {}
 ): BuildCommand[] {
   const cmds: BuildCommand[] = [];
-  const MAX_RUN = 64;
-  const blocks = st.blocks;
-  let i = 0;
-  while (i < blocks.length) {
-    const b = blocks[i];
-    let j = i + 1;
-    while (
-      j < blocks.length &&
-      j - i < MAX_RUN &&
-      blocks[j].x === b.x &&
-      blocks[j].y === b.y &&
-      blocks[j].z === b.z + (j - i) &&
-      blocks[j].block === b.block
-    ) {
-      j++;
+  const maxFill = Math.max(1, Math.min(FILL_LIMIT, Math.trunc(opts.maxFillVolume ?? FILL_LIMIT) || FILL_LIMIT));
+  const sx = Math.max(1, st.size.x);
+  const sy = Math.max(1, st.size.y);
+  const sz = Math.max(1, st.size.z);
+  /** 结构内局部坐标 → 唯一数字 key（坐标都在 [0, size) 内） */
+  const keyOf = (x: number, y: number, z: number) => (x * sy + y) * sz + z;
+
+  // 按方块字符串分组（同名字同状态才会合并）
+  const groups = new Map<string, StructureBlock[]>();
+  for (const b of st.blocks) {
+    let list = groups.get(b.block);
+    if (!list) groups.set(b.block, (list = []));
+    list.push(b);
+  }
+
+  for (const [block, list] of groups) {
+    list.sort((a, b) => a.x - b.x || a.y - b.y || a.z - b.z);
+    const cells = new Set<number>();
+    for (const b of list) cells.add(keyOf(b.x, b.y, b.z));
+    const used = new Set<number>();
+
+    for (const b of list) {
+      if (used.has(keyOf(b.x, b.y, b.z))) continue;
+
+      // 1) 沿 z 拉成一条线
+      let z2 = b.z;
+      while (z2 + 1 < sz && cells.has(keyOf(b.x, b.y, z2 + 1)) && !used.has(keyOf(b.x, b.y, z2 + 1))) z2++;
+
+      // 2) 沿 x 把线扩成平面（每列整条都在才行）
+      let x2 = b.x;
+      for (;;) {
+        const x = x2 + 1;
+        if (x >= sx) break;
+        let ok = true;
+        for (let z = b.z; z <= z2; z++) {
+          const k = keyOf(x, b.y, z);
+          if (!cells.has(k) || used.has(k)) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) break;
+        x2 = x;
+      }
+
+      // 3) 沿 y 把平面堆成方块体
+      let y2 = b.y;
+      for (;;) {
+        const y = y2 + 1;
+        if (y >= sy) break;
+        let ok = true;
+        for (let x = b.x; x <= x2 && ok; x++) {
+          for (let z = b.z; z <= z2; z++) {
+            const k = keyOf(x, y, z);
+            if (!cells.has(k) || used.has(k)) {
+              ok = false;
+              break;
+            }
+          }
+        }
+        if (!ok) break;
+        y2 = y;
+      }
+
+      for (let x = b.x; x <= x2; x++) {
+        for (let y = b.y; y <= y2; y++) {
+          for (let z = b.z; z <= z2; z++) used.add(keyOf(x, y, z));
+        }
+      }
+
+      const wx = origin.x + b.x;
+      const wy = origin.y + b.y + offsetY;
+      const wz = origin.z + b.z;
+      const width = x2 - b.x + 1;
+      const height = y2 - b.y + 1;
+      const depth = z2 - b.z + 1;
+      const volume = width * height * depth;
+
+      if (volume === 1) {
+        cmds.push({ command: `setblock ${wx} ${wy} ${wz} ${block}`, count: 1 });
+        continue;
+      }
+
+      // 超过单条 fill 上限就切片：先按「一层」切 y，层本身还太大就再切 x
+      const layer = width * depth;
+      if (layer <= maxFill) {
+        const perY = Math.max(1, Math.floor(maxFill / layer));
+        for (let y = 0; y < height; y += perY) {
+          const yEnd = Math.min(height - 1, y + perY - 1);
+          cmds.push({
+            command: `fill ${wx} ${wy + y} ${wz} ${wx + width - 1} ${wy + yEnd} ${wz + depth - 1} ${block}`,
+            count: (yEnd - y + 1) * layer,
+          });
+        }
+      } else {
+        const perX = Math.max(1, Math.floor(maxFill / depth));
+        for (let x = 0; x < width; x += perX) {
+          const xEnd = Math.min(width - 1, x + perX - 1);
+          const chunk = (xEnd - x + 1) * depth;
+          const perY = Math.max(1, Math.floor(maxFill / chunk));
+          for (let y = 0; y < height; y += perY) {
+            const yEnd = Math.min(height - 1, y + perY - 1);
+            cmds.push({
+              command:
+                `fill ${wx + x} ${wy + y} ${wz} ` +
+                `${wx + xEnd} ${wy + yEnd} ${wz + depth - 1} ${block}`,
+              count: (yEnd - y + 1) * chunk,
+            });
+          }
+        }
+      }
     }
-    const len = j - i;
-    const wx = origin.x + b.x;
-    const wy = origin.y + b.y + offsetY;
-    const wz = origin.z + b.z;
-    if (len === 1) {
-      cmds.push({ command: `setblock ${wx} ${wy} ${wz} ${b.block}`, count: 1 });
-    } else {
-      cmds.push({
-        command: `fill ${wx} ${wy} ${wz} ${wx} ${wy} ${wz + len - 1} ${b.block}`,
-        count: len,
-      });
-    }
-    i = j;
   }
   return cmds;
 }

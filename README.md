@@ -545,7 +545,7 @@ tsconfig.json        类型检查配置（npm run typecheck）
 
 ## 已知限制
 
-- 落块层每块发一条 `setblock`，十万级结构会产生同等数量的命令；要提速可以合并成 `fill`，但那会改变与服务器交互的节奏，暂未做
+- 放置层已经做 **3D 贪心合块**：实心区域用一条 `fill` 覆盖（16³ 一块 = 1 条命令，64³ = 8 条，旧版要 26 万条 `setblock`）。单条 `fill` 的方块上限默认 32768（`/fill` 协议上限），可用 `FB_FILL_MAX`（WS 版）/ `FB_NETEASE_FILL_MAX`（网易版）调小；设成 `1` 就退回逐块 `setblock`
 - 网易登录助手内的 mpay 实现来自 [NeteaseLogin](https://github.com/DHY0627/NeteaseLogin)（MIT），已随仓库 vendor
 - 管理面板为单实例本地工具，没有账户体系；若要多人使用请自行加反代与访问控制
 - 网易同一账号的 PC 会话与 PE 会话互斥：面板「同时登录 PE 通道」默认关闭，需要领 PE 商城组件时再手动开

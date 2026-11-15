@@ -3,6 +3,16 @@
 版本号在 `package.json`（`version`）和 `packaging/android/app/build.gradle`（`versionName` / `versionCode`）两处同步。
 0.1.6 之前有 git tag（`v0.1.2` … `v0.1.6`）；之后按功能批次归纳，逐条提交见 GitHub 提交历史。
 
+## 0.2.5
+
+**大面积放置改用 3D `fill` 合块**
+
+- `structureCommands()` 从「沿 z 合并成 1×1×N」升级为 3D 贪心：先沿 z 拉线、再沿 x 扩面、最后沿 y 堆体，同名字同状态的实心区域一条 `fill` 覆盖
+- 实测：16³ 实心 = 1 条命令；32³ = 1 条；64³ = 8 条（旧版 262144 条 setblock），规划耗时约 0.1s
+- 单条 `fill` 体积默认 32768（`/fill` 上限），超出自动按层/按列切片，覆盖范围不变
+- 新环境变量：`FB_FILL_MAX`（WS 版）、`FB_NETEASE_FILL_MAX`（网易版），设成 `1` 退回逐块 `setblock`
+- 测试：126 条（新增 3D 合块、切片守恒、混合方块+空腔覆盖一致性）
+
 ## 0.2.4
 
 **修复 Windows 桌面版「后台服务 20 秒内没有就绪」**

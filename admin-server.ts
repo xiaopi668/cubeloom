@@ -235,6 +235,23 @@ export type AuthStartup =
  * 启动时的认证判定（纯逻辑 + 一次读文件），失败时把"为什么"和"怎么修"写清楚。
  * 由 startServer() 调用；测试用临时文件直接调。
  */
+/** 把损坏的口令文件挪走（回环模式下自愈；非回环仍然 fail-closed） */
+function quarantineAuthFile(authFile: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dst = `${authFile}.broken-${stamp}`;
+  try {
+    fs.renameSync(authFile, dst);
+    return dst;
+  } catch {
+    try {
+      fs.rmSync(authFile, { force: true });
+      return "(已删除)";
+    } catch {
+      return "(无法移动)";
+    }
+  }
+}
+
 export function loadAuthStartup(authFile: string, bindHost: string, allowNoAuth: boolean): AuthStartup {
   const rel = path.basename(authFile);
   let raw: string;
@@ -242,6 +259,14 @@ export function loadAuthStartup(authFile: string, bindHost: string, allowNoAuth:
     raw = fs.readFileSync(authFile, "utf8");
   } catch (e: any) {
     if (e?.code !== "ENOENT") {
+      if (isLoopbackBindHost(bindHost)) {
+        const moved = quarantineAuthFile(authFile);
+        return {
+          mode: "open",
+          reason: "loopback",
+          message: `读取口令文件失败（${e?.message ?? e}），已把它挪到 ${moved}；面板只绑定回环 ${bindHost}，按无口令模式启动`,
+        };
+      }
       return {
         mode: "fatal",
         message: [
@@ -282,6 +307,14 @@ export function loadAuthStartup(authFile: string, bindHost: string, allowNoAuth:
   try {
     parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
   } catch (e: any) {
+    if (isLoopbackBindHost(bindHost)) {
+      const moved = quarantineAuthFile(authFile);
+      return {
+        mode: "open",
+        reason: "loopback",
+        message: `${authFile} 解析失败（${e?.message ?? e}），已挪到 ${moved}；面板只绑定回环 ${bindHost}，按无口令模式启动（重新设置口令请运行 npm run set-password）`,
+      };
+    }
     return {
       mode: "fatal",
       message: [
@@ -292,6 +325,14 @@ export function loadAuthStartup(authFile: string, bindHost: string, allowNoAuth:
   }
   const config = normalizeAuthConfig(parsed);
   if (!config) {
+    if (isLoopbackBindHost(bindHost)) {
+      const moved = quarantineAuthFile(authFile);
+      return {
+        mode: "open",
+        reason: "loopback",
+        message: `${authFile} 内容不完整，已挪到 ${moved}；面板只绑定回环 ${bindHost}，按无口令模式启动（重新设置口令请运行 npm run set-password）`,
+      };
+    }
     return {
       mode: "fatal",
       message: [

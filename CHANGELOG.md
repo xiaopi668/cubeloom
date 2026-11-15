@@ -11,6 +11,7 @@
 - 后台服务的 stdout/stderr 落到 `%APPDATA%\Cubeloom\logs\desktop.log`；启动失败对话框直接贴出最近 30 行，不用再去翻目录
 - 等待时间 20s → 30s；新增 `/api/ping`（不需要登录）用于识别端口上是不是 Cubeloom
 - 网易机器人（43MB、上万文件）的首次复制改成**后台进行**，不再挡在启动流程里（被杀软扫描时尤其明显）
+- 回环模式下 `auth.json` 损坏/缺字段不再直接拒绝启动：改名成 `auth.json.broken-<时间戳>` 后按无口令模式启动（只绑 127.0.0.1）；非回环仍严格 fail-closed
 - 版本 0.2.4（versionCode 38）
 
 ## 0.2.3

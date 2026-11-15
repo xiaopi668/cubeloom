@@ -128,7 +128,8 @@ systemctl restart cubeloom
 - 登录成功后发 HttpOnly + SameSite=Strict 签名 Cookie（`exp.epoch.mac`），默认 12 小时；https/反代下自动加 `Secure`
 - 每次 `npm run set-password` 都会轮换 secret 并递增 `epoch`，**旧 Cookie 立即失效**
 - 已登录时调用 `POST /api/auth/revoke` 可立即踢掉所有会话（含当前），无需重启面板
-- 启动时的 fail-closed 规则：非回环绑定且 `admin/auth.json` 不存在 → 拒绝启动；文件损坏 → 拒绝启动；只有 `FB_ADMIN_ALLOW_NO_AUTH=1` 才显式放开
+- 启动时的 fail-closed 规则：**非回环**绑定且 `admin/auth.json` 不存在 / 损坏 / 缺字段 → 拒绝启动，只有 `FB_ADMIN_ALLOW_NO_AUTH=1` 才显式放开；
+  **回环**绑定（默认）下缺文件按无口令模式运行，损坏/缺字段则把文件改名成 `auth.json.broken-<时间戳>` 后同样按无口令启动（只绑 127.0.0.1，不对外暴露；重新设口令请跑 `npm run set-password`）
 - 同一 IP 5 分钟内错 8 次锁定 5 分钟
 - 本机开发想免登录：删除 `admin/auth.json` 即可
 

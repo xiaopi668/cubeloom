@@ -188,7 +188,7 @@ test("rotateAuthConfig：secret 换新、epoch +1、口令哈希保留，旧 tok
   assert.equal(verifySessionToken(after, oldToken).ok, false, "轮换后旧会话必须失效");
 });
 
-test("启动判定 fail-closed：非回环无 auth.json / 损坏文件 → fatal；回环或显式放行 → open", () => {
+test("启动判定：非回环缺文件/损坏文件 → fatal；回环缺文件或损坏文件 → open（损坏文件被挪走）", () => {
   const dir = tmpdir();
   const file = path.join(dir, "auth.json");
 
@@ -206,14 +206,27 @@ test("启动判定 fail-closed：非回环无 auth.json / 损坏文件 → fatal
   assert.equal(forced.mode, "open");
   assert.equal((forced as any).reason, "forced");
 
+  // 非回环：损坏文件仍然 fail-closed
   fs.writeFileSync(file, '{ "passwordHash": ', "utf8");
-  const corrupt = loadAuthStartup(file, "127.0.0.1", false);
-  assert.equal(corrupt.mode, "fatal", "解析失败必须拒绝启动，不能退化成无鉴权");
-  assert.match((corrupt as any).message, /解析失败/);
-  assert.match((corrupt as any).message, /set-password/);
+  const corruptLan = loadAuthStartup(file, "0.0.0.0", false);
+  assert.equal(corruptLan.mode, "fatal", "非回环 + 损坏文件必须拒绝启动");
+  assert.match((corruptLan as any).message, /解析失败/);
 
+  // 回环：损坏文件挪到 .broken-*，按无口令启动（桌面端自愈，避免起不来）
+  const corrupt = loadAuthStartup(file, "127.0.0.1", false);
+  assert.equal(corrupt.mode, "open", "回环下损坏文件应自愈成无口令模式");
+  assert.equal((corrupt as any).reason, "loopback");
+  assert.match((corrupt as any).message, /挪到/);
+  assert.ok(
+    fs.readdirSync(dir).some((n) => n.startsWith("auth.json.broken-")),
+    "损坏的口令文件应被改名保留"
+  );
+
+  // 回环：内容不完整同样自愈
   fs.writeFileSync(file, JSON.stringify({ passwordHash: "scrypt$1$2$3$4$5" }), "utf8");
-  assert.equal(loadAuthStartup(file, "127.0.0.1", false).mode, "fatal", "缺 secret 必须拒绝启动");
+  const partial = loadAuthStartup(file, "127.0.0.1", false);
+  assert.equal(partial.mode, "open", "回环下缺字段的配置应自愈");
+  assert.match((partial as any).message, /内容不完整|挪到/);
 
   writeAuthFileAtomic(file, cfg({ epoch: 2 }));
   const ok = loadAuthStartup(file, "0.0.0.0", false);

@@ -3,6 +3,12 @@
 版本号在 `package.json`（`version`）和 `packaging/android/app/build.gradle`（`versionName` / `versionCode`）两处同步。
 0.1.6 之前有 git tag（`v0.1.2` … `v0.1.6`）；之后按功能批次归纳，逐条提交见 GitHub 提交历史。
 
+## 0.2.1
+
+- Windows 桌面构建改为**自签名**（secrets 已配 `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`，自签证书 `CN=Cubeloom`，2029-11 到期）
+- 公钥证书随仓库分发：`packaging/desktop/codesign/cubeloom-selfsigned.crt`，用户手动信任后 SmartScreen 不再提示「未知发布者」
+- macOS 仍为未签名/未公证（缺 Developer ID 证书与 Apple 公证凭据）
+
 ## 未发布
 
 **桌面端代码签名**

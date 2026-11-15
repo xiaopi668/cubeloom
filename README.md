@@ -396,9 +396,13 @@ Actions 页面里对应 workflow 的 **Artifacts**（tag 构建还会附带 Rele
 | Linux | `Cubeloom-<版本>.AppImage` | `chmod +x` 后直接运行 |
 | Android | `Cubeloom-Android-<版本>-release.apk` | 传到手机安装（允许未知来源），打开 App；`npm run build:android -- --debug` 可出调试包 |
 
-> 没配证书时产物是**未签名**的：Windows 首次运行会弹 SmartScreen（更多信息 → 仍要运行）；
-> macOS 需要 `xattr -dr com.apple.quarantine /Applications/Cubeloom.app`。仓库里已经接好签名流水线，
-> 在 GitHub 里配好下面的 secrets 后，CI 会自动签名（macOS 还会公证），详见「代码签名」。
+> **Windows 安装包现在是「自签名」的**：签名者显示为 `Cubeloom`，但证书不是 CA 签发的，SmartScreen 仍会拦一次
+> （更多信息 → 仍要运行）。想彻底不弹，把随仓库分发的公钥证书
+> [`packaging/desktop/codesign/cubeloom-selfsigned.crt`](packaging/desktop/codesign/cubeloom-selfsigned.crt)
+> 装进「受信任的根证书颁发机构」和「受信任的发布者」（见「代码签名」一节的命令），或者以后换 OV/EV 证书。
+>
+> macOS 仍是未签名/未公证：需要 `xattr -dr com.apple.quarantine /Applications/Cubeloom.app`。
+> 签名流水线已经接好，配好 secrets 后 CI 会自动签名（macOS 还会公证）。
 
 ### Windows（EXE，自带网易机器人）
 
@@ -469,6 +473,16 @@ FB_ADMIN_HOST=0.0.0.0 npm run admin   # 必须先有 admin/auth.json 口令，�
 - macOS 公证需要 **Hardened Runtime**，`tools/build.mjs` 已经打开，并在
   `packaging/desktop/entitlements.mac.plist` 里放开了 Electron 需要的 JIT 与原生库加载。
 - Linux 的 AppImage 不做签名。
+- **当前仓库的 Windows 证书是自签名的**（`CN=Cubeloom`，2026-11 签发、2029-11 到期，公钥在
+  `packaging/desktop/codesign/cubeloom-selfsigned.crt`）。信任它：
+
+  ```powershell
+  certutil -addstore Root packaging\desktop\codesign\cubeloom-selfsigned.crt
+  certutil -addstore TrustedPublisher packaging\desktop\codesign\cubeloom-selfsigned.crt
+  signtool verify /pa /v Cubeloom.Setup.0.2.1.exe
+  ```
+
+  只想看签名者是谁、不装证书：`signtool verify /pa /v` 会提示「证书链未受信任」，但 Subject 仍是 `CN=Cubeloom`。
 - 配了证书的那一端会带 `--config.forceCodeSigning=true`：签名失败会直接让构建失败，不会悄悄产出未签名包。
 - 本地验证（需要 electron-builder 26）：
 

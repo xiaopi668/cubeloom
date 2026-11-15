@@ -69,3 +69,9 @@ netease-bot/account.json
 netease-bot/purchase-cooldown.json
 netease-bot/lobby-cooldown.json
 netease-bot/auth-cooldown.json
+
+# 代码签名私钥（绝不入库；公钥证书可以放 packaging/desktop/codesign/）
+*.pfx
+*.p12
+*.pfx.b64
+*.key

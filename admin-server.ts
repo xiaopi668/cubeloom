@@ -138,6 +138,8 @@ const ADMIN_HOST = (process.env.FB_ADMIN_HOST || readAdminNetworkHost() || "127.
 const WS_PORT = Number(process.env.FB_WS_PORT ?? 11451);
 const CONTROL_PORT = Number(process.env.FB_CONTROL_PORT ?? 11453);
 const WS_VERSION = Number(process.env.FB_WS_VERSION ?? 17104896);
+/** 版本号：Electron 主进程会传 FB_APP_VERSION；纯 node 启动时留空 */
+const APP_VERSION = String(process.env.FB_APP_VERSION ?? "").trim();
 // 对外公布给游戏用的 WS 地址（留空则按页面访问的域名自动生成）
 const PUBLIC_WS_URL = (process.env.FB_PUBLIC_WS_URL || "").trim().replace(/\/$/, "");
 const WEB_STARTED_AT = Date.now();
@@ -2006,6 +2008,11 @@ const server = createServer(async (req, res) => {
   try {
     const blocked = requestGuard(req);
     if (blocked) return sendJson(res, blocked.status, { ok: false, error: blocked.error });
+
+    // 健康检查：桌面端用它判断「端口上跑的是不是 Cubeloom」，不走鉴权、不泄露信息
+    if (p === "/api/ping") {
+      return sendJson(res, 200, { ok: true, app: APP_NAME, version: APP_VERSION, pid: process.pid, uptime: process.uptime() });
+    }
 
     // ---- 登录校验（admin/auth.json 存在时启用；口令只存 scrypt 哈希） ----
     if (auth) {

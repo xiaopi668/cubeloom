@@ -384,6 +384,7 @@ pid / 重启次数 / 最后错误。细节见 [packaging/netease-bot/README.md](
 | `登录态已失效：请重新登录` | x19 token 被 PE 认证挤掉/过期：点一次「PE 通道登录」或重新登录，Cubeloom 也会自动用 sauth 重登一次 |
 | `操作过于频繁` | 网易登录频控：`auth-cooldown.json` 记 20 分钟冷却，期间别重复点；购买/进房另有 30 分钟 / 10 秒冷却 |
 | 本地联机「无法找到该房间」 | 房间号正确但房间已关闭/房主退出；换一个正在开着的房间号再试 |
+| 桌面版「后台服务 20 秒内没有就绪」 | 0.2.4 起：端口被占用会自动复用（Cubeloom）或换端口；仍失败就看 `%APPDATA%\Cubeloom\logs\desktop.log`，或把失败对话框里的日志尾巴发出来 |
 
 ## 下载与使用（APK / EXE / AppImage）
 

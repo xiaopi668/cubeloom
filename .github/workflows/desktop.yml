@@ -73,18 +73,38 @@ jobs:
         run: npm run build
       - name: 校验登录助手已进包
         run: node -e "const fs=require('fs');const hit=['x19login','x19login.exe'].filter(f=>fs.existsSync('build/server/'+f));if(!hit.length)throw new Error('build/server 里没有 x19login');console.log('x19login:',hit.join(', '))"
+      - name: 准备签名凭据（只有配置了 secrets 才注入）
+        shell: bash
+        env:
+          IN_WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          IN_WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          IN_CSC_LINK: ${{ secrets.CSC_LINK }}
+          IN_CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          IN_APPLE_ID: ${{ secrets.APPLE_ID }}
+          IN_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          IN_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          add() {
+            local name="$1" value="${2:-}"
+            # 注意：空值绝不能写进环境——electron-builder v26 会把空 CSC_LINK 当成路径，
+            # 于是 path.resolve(projectDir, "") 得到 build/desktop，报 "build/desktop not a file"
+            if [ -n "$value" ]; then
+              echo "$name=$value" >> "$GITHUB_ENV"
+              echo "已注入 $name"
+            fi
+          }
+          add WIN_CSC_LINK "$IN_WIN_CSC_LINK"
+          add WIN_CSC_KEY_PASSWORD "$IN_WIN_CSC_KEY_PASSWORD"
+          add CSC_LINK "$IN_CSC_LINK"
+          add CSC_KEY_PASSWORD "$IN_CSC_KEY_PASSWORD"
+          add APPLE_ID "$IN_APPLE_ID"
+          add APPLE_APP_SPECIFIC_PASSWORD "$IN_APPLE_APP_SPECIFIC_PASSWORD"
+          add APPLE_TEAM_ID "$IN_APPLE_TEAM_ID"
+
       - name: 打包（自动签名：有证书就签，没证书就出未签名包）
         shell: bash
         env:
-          # macOS：Developer ID Application 证书 + 公证账号
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Windows：Authenticode 证书（.pfx 的 base64）
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           # 没证书时明确关掉自动发现，避免 electron-builder 拿空 CSC_LINK 去签名然后失败
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
         run: |

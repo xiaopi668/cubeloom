@@ -1074,19 +1074,32 @@ function readSessionFile(): SavedSession | null {
   };
 }
 
-function saveSauthFile(sauth: string) {
+function saveSauthFile(sauth: string, account = "") {
   const raw = String(sauth ?? "").trim();
   if (!raw) return;
   try {
-    writeFileAtomic(NETEASE_SAUTH_FILE, JSON.stringify({ v: 1, sauth: raw, savedAt: Date.now() }, null, 2) + "\n");
+    writeFileAtomic(
+      NETEASE_SAUTH_FILE,
+      JSON.stringify({ v: 2, sauth: raw, account: String(account ?? ""), savedAt: Date.now() }, null, 2) + "\n"
+    );
   } catch (e: any) {
     log(`保存 sauth 失败（PE 通道将无法单独刷新）：${e?.message ?? e}`);
   }
 }
 
-function readSauthFile(): string {
+/**
+ * 读 sauth。带上它属于哪个账号：切账号（例如导入别人的登录态）后如果还拿旧 sauth
+ * 去换 PE token，会登进另一个账号，必须挡住。
+ */
+function readSauthFile(): { sauth: string; account: string } {
   const raw = readJsonFile(NETEASE_SAUTH_FILE) || {};
-  return String(raw.sauth ?? "").trim();
+  return { sauth: String(raw.sauth ?? "").trim(), account: String(raw.account ?? "") };
+}
+
+function clearSauthFile() {
+  try {
+    fs.rmSync(NETEASE_SAUTH_FILE, { force: true });
+  } catch {}
 }
 
 function clearSessionFile() {
@@ -1184,12 +1197,36 @@ const PE_TOKEN_TTL = 30 * 60_000;
  * 下一次点击又会去撞，只会把惩罚期越拖越长。
  */
 const AUTH_COOLDOWN_FILE = path.join(NETEASE_BOT_DIR, "auth-cooldown.json");
-let authRefreshCooldownUntil = (() => {
+/**
+ * 冷却要按账号记：同一台机器换账号登录时，旧账号撞出来的频控不该把新账号也锁 20 分钟。
+ */
+type AuthCooldown = { until: number; account: string };
+let authCooldown: AuthCooldown = (() => {
   const raw = readJsonFile(AUTH_COOLDOWN_FILE) || {};
-  return Math.max(0, Number(raw.until ?? 0) || 0);
+  return {
+    until: Math.max(0, Number(raw.until ?? 0) || 0),
+    account: String(raw.account ?? ""),
+  };
 })();
+/** 最近一次刷新登录态的真实失败原因（面板/接口报错用它，不再一律写成「频控」） */
+let lastAuthError = "";
 /** 刷新并发去重：同时点两次按钮不该发两次登录请求 */
 let authRefreshPromise: Promise<boolean> | null = null;
+
+/** 当前账号还剩多少冷却（换账号就忽略旧账号的冷却） */
+function authCooldownLeft(): number {
+  const cur = String(x19Cred?.entityId ?? "");
+  if (authCooldown.account && cur && authCooldown.account !== cur) return 0;
+  return Math.max(0, authCooldown.until - Date.now());
+}
+
+function clearAuthCooldown(): void {
+  authCooldown = { until: 0, account: "" };
+  lastAuthError = "";
+  try {
+    fs.rmSync(AUTH_COOLDOWN_FILE, { force: true });
+  } catch {}
+}
 
 /** 手里的 PE token 有多旧（毫秒）；没有 token 时是 Infinity */
 function peTokenAgeMs(): number {
@@ -1210,23 +1247,34 @@ function peTokenAgeMs(): number {
  * 对应 Go 侧：`neteasex19.LoginBySauth`（VQ 的 MKeyService.PeLoginWithSauthAsync 同源）。
  */
 /** 记一次登录频控冷却（落盘，重启也生效） */
-function setAuthCooldown(ms: number): void {
-  authRefreshCooldownUntil = Date.now() + ms;
+function setAuthCooldown(ms: number, reason = ""): void {
+  authCooldown = { until: Date.now() + ms, account: String(x19Cred?.entityId ?? "") };
+  if (reason) lastAuthError = reason;
   try {
-    writeFileAtomic(AUTH_COOLDOWN_FILE, JSON.stringify({ until: authRefreshCooldownUntil, at: Date.now() }, null, 2) + "\n");
+    writeFileAtomic(
+      AUTH_COOLDOWN_FILE,
+      JSON.stringify({ ...authCooldown, reason, at: Date.now() }, null, 2) + "\n"
+    );
   } catch {}
 }
 
 async function refreshCredsWithSauth(reason: string): Promise<boolean> {
   if (authRefreshPromise) return authRefreshPromise;
-  const waitLeft = authRefreshCooldownUntil - Date.now();
+  const waitLeft = authCooldownLeft();
   if (waitLeft > 0) {
     log(`网易登录频控冷却中，还有 ${Math.ceil(waitLeft / 1000)} 秒，先不重登`);
     return false;
   }
-  const sauth = readSauthFile();
+  const saved = readSauthFile();
+  const sauth = saved.sauth;
   if (!sauth) {
+    lastAuthError = "本机没有保存 sauth（用账号密码登录一次即可拿到）";
     log("没有保存 sauth，无法刷新登录态（重新用账号密码登录一次即可拿到）");
+    return false;
+  }
+  if (saved.account && x19Cred?.entityId && saved.account !== x19Cred.entityId) {
+    lastAuthError = `本机保存的 sauth 属于另一个账号（${saved.account}），不能用来给 ${x19Cred.entityId} 换 PE token`;
+    log(lastAuthError);
     return false;
   }
   log(`用 sauth 重新登录（${reason}）…`);
@@ -1238,7 +1286,8 @@ async function refreshCredsWithSauth(reason: string): Promise<boolean> {
     const state = await session.wait(95_000);
     if (state.status !== "ok" || !state.token) {
       const msg = state.error || state.status;
-      if (/频繁|稍后重试|操作过于频繁/.test(msg)) setAuthCooldown(20 * 60_000);
+      lastAuthError = msg;
+      if (/频繁|稍后重试|操作过于频繁/.test(msg)) setAuthCooldown(20 * 60_000, msg);
       log(`sauth 重新登录失败：${msg}`);
       return false;
     }
@@ -1250,8 +1299,9 @@ async function refreshCredsWithSauth(reason: string): Promise<boolean> {
     // 或者 PE 侧在维护。两种情况下继续点都只会加深惩罚，所以统一放一段冷却。
     if (!peToken) {
       const peMsg = [state.peError, ...(state.notices || [])].join(" ").trim();
+      lastAuthError = peMsg || "PE 认证没有返回 token";
       log(`PE 通道没拿到：${peMsg || "原因未知"}（冷却 20 分钟后再试）`);
-      setAuthCooldown(20 * 60_000);
+      setAuthCooldown(20 * 60_000, lastAuthError);
     }
     x19Cred = {
       entityId: state.entityId || x19Cred?.entityId || "",
@@ -1265,10 +1315,10 @@ async function refreshCredsWithSauth(reason: string): Promise<boolean> {
     };
     saveSessionFile(x19Cred);
     // 这次能登进去说明频控已经解除，清掉落盘的冷却
-    authRefreshCooldownUntil = 0;
-    try {
-      fs.rmSync(AUTH_COOLDOWN_FILE, { force: true });
-    } catch {}
+    if (peToken) clearAuthCooldown();
+    else {
+      authCooldown = { until: authCooldown.until, account: authCooldown.account };
+    }
     log(
       `登录态已刷新：uid ${x19Cred.entityId}` +
         (peToken
@@ -1326,7 +1376,7 @@ async function withAuthRetry<T>(fn: () => Promise<T>): Promise<T> {
     const expired = isAuthExpiredError(e);
     if (!stalePe && !expired) throw e;
     // 冷却期里重登只会加深网易的惩罚：直接把「等多久」告诉用户，别再打接口
-    const left = authRefreshCooldownUntil - Date.now();
+    const left = authCooldownLeft();
     if (left > 0) {
       throw new Error(
         `网易要求重新登录（${String(e?.message ?? e)}），但刚才登录被频控过，` +
@@ -1401,7 +1451,9 @@ function startX19Login(input: any) {
     };
     saveAccountCfg({ account });
     saveSessionFile(x19Cred);
-    if (state.sauth) saveSauthFile(state.sauth);
+    if (state.sauth) saveSauthFile(state.sauth, state.entityId || "");
+    // 刚登录成功：旧账号/旧会话留下的登录频控冷却作废
+    clearAuthCooldown();
     log(`网易账号已登录：${state.name || "（无昵称）"}（uid ${state.entityId}）`);
     if (x19Cred.peToken) log(`PE 通道已就绪（uid ${x19Cred.peEntityId || x19Cred.entityId}），可领取联机大厅组件`);
     else if (state.peError) log(`PE 通道未就绪：${state.peError}`);
@@ -1431,7 +1483,8 @@ function logoutX19() {
   x19Session = null;
   x19Cred = null;
   clearSessionFile();
-  log("已退出网易账号登录态，并清除本地保存");
+  clearAuthCooldown();
+  log("已退出网易账号登录态，并清除本地保存（含 sauth 与登录频控冷却）");
   return { ok: true };
 }
 
@@ -2439,6 +2492,8 @@ const server = createServer(async (req, res) => {
         expiresAt: 0,
       };
       x19Cred = cand;
+      // 导入的登录态不带 sauth：清掉本机旧账号的 sauth，避免拿它去换到别的账号头上
+      clearSauthFile();
       const ok = await refreshCred(cand);
       if (!ok) {
         x19Cred = prev;
@@ -2461,7 +2516,7 @@ const server = createServer(async (req, res) => {
     // 单独换一次 PE 通道 token（用登录时存下的 sauth，不需要再输密码）
     if (p === "/api/netease-service/session/pe" && req.method === "POST") {
       if (!x19Cred) return sendJson(res, 200, { ok: false, error: "当前没有登录态" });
-      if (!readSauthFile()) {
+      if (!readSauthFile().sauth) {
         return sendJson(res, 200, {
           ok: false,
           error: "本机没有保存 sauth（旧版本登录的登录态），请重新用账号密码登录一次，之后就能单独刷新 PE 通道",
@@ -2471,7 +2526,7 @@ const server = createServer(async (req, res) => {
       const ok = await refreshCredsWithSauth("面板手动刷新 PE/登录态");
       const ready = !!x19Cred && hasPeSession(credOf(x19Cred));
       if (ready) return sendJson(res, 200, { ok: true, login: loginSnapshot() });
-      const left = Math.max(1, Math.ceil((authRefreshCooldownUntil - Date.now()) / 60_000));
+      const left = Math.max(1, Math.ceil(authCooldownLeft() / 60_000));
       return sendJson(res, 200, {
         ok: false,
         error: ok
@@ -2598,11 +2653,13 @@ const server = createServer(async (req, res) => {
         const msg = decorateAuthError(e).message;
         // 没拿到 PE 通道时补一句原因（否则「PC 商城目标找不到」会把人带偏）
         const needPe = !!x19Cred && !hasPeSession(credOf(x19Cred)) && !/PE 通道/.test(msg);
+        const left = Math.max(0, Math.ceil(authCooldownLeft() / 60_000));
+        const why = lastAuthError || "PE 认证没有返回 token";
         return sendJson(res, 200, {
           ok: false,
           error: needPe
-            ? `${msg}（联机专区是 PE 商城商品，本次 PE 通道不可用：网易登录频控「操作过于频繁」，` +
-              "通常要等 20 分钟以上再点一次「领取组件」，或去「登录态」一栏点「PE 通道登录」）"
+            ? `${msg}（联机专区是 PE 商城商品，本次 PE 通道不可用：${why}` +
+              `${left > 0 ? `；建议 ${left} 分钟后再试` : "；可以再点一次「PE 通道登录」"}）`
             : msg,
         });
       }

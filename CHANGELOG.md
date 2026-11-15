@@ -3,6 +3,14 @@
 版本号在 `package.json`（`version`）和 `packaging/android/app/build.gradle`（`versionName` / `versionCode`）两处同步。
 0.1.6 之前有 git tag（`v0.1.2` … `v0.1.6`）；之后按功能批次归纳，逐条提交见 GitHub 提交历史。
 
+## 0.2.3
+
+- **登录频控冷却按账号隔离**：换账号后不再被上一个账号撞出来的 20 分钟冷却锁住（之前是全局的，新账号点「领取组件」直接报频控、根本没发请求）
+- **sauth 绑定账号**：`sauth.json` 记 `account`；导入登录态 / 退出登录会清掉 sauth；账号对不上时拒绝拿旧 sauth 去换 PE token（避免换到别人账号头上）
+- 领取失败时显示**真实的 PE 失败原因**（网易原话），不再一律写成「登录频控」
+- CI：签名凭据改成只有非空才注入环境（electron-builder 26 会把空 `CSC_LINK` 解析成项目目录，报 `build/desktop not a file`，这是 macOS 构建连续失败的真正原因）
+- 版本 0.2.3（versionCode 37）
+
 ## 0.2.2
 
 - 桌面端应用图标：Windows `.ico`（16–256 多尺寸）、macOS `.icns`（128–1024）、Linux/窗口 `icon.png`，Electron 窗口图标一并设置

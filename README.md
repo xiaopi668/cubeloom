@@ -396,8 +396,9 @@ Actions 页面里对应 workflow 的 **Artifacts**（tag 构建还会附带 Rele
 | Linux | `Cubeloom-<版本>.AppImage` | `chmod +x` 后直接运行 |
 | Android | `Cubeloom-Android-<版本>-release.apk` | 传到手机安装（允许未知来源），打开 App；`npm run build:android -- --debug` 可出调试包 |
 
-> 产物**未签名**：Windows 首次运行会弹 SmartScreen（更多信息 → 仍要运行）；macOS 需要
-> `xattr -dr com.apple.quarantine /Applications/Cubeloom.app`；Android 是 debug 签名，仅自用/测试。
+> 没配证书时产物是**未签名**的：Windows 首次运行会弹 SmartScreen（更多信息 → 仍要运行）；
+> macOS 需要 `xattr -dr com.apple.quarantine /Applications/Cubeloom.app`。仓库里已经接好签名流水线，
+> 在 GitHub 里配好下面的 secrets 后，CI 会自动签名（macOS 还会公证），详见「代码签名」。
 
 ### Windows（EXE，自带网易机器人）
 
@@ -446,6 +447,36 @@ FB_ADMIN_HOST=0.0.0.0 npm run admin   # 必须先有 admin/auth.json 口令，�
 ```
 
 日志在应用私有目录 `files/cubeloom/nodejs-project/logs`（仅本机模式）。
+
+### 代码签名
+
+仓库的桌面/Android 打包都走「有证书就签名，没有就出未签名包」，不需要改代码。在
+**GitHub → Settings → Secrets and variables → Actions** 里配置：
+
+| Secret | 平台 | 内容 |
+|---|---|---|
+| `WIN_CSC_LINK` | Windows | Authenticode 证书 `.pfx` 的 base64（`base64 -w0 cert.pfx`） |
+| `WIN_CSC_KEY_PASSWORD` | Windows | 导出 `.pfx` 时设的密码 |
+| `CSC_LINK` | macOS | **Developer ID Application** 证书 `.p12` 的 base64 |
+| `CSC_KEY_PASSWORD` | macOS | `.p12` 密码 |
+| `APPLE_ID` | macOS 公证 | Apple 账号邮箱 |
+| `APPLE_APP_SPECIFIC_PASSWORD` | macOS 公证 | App 专用密码（appleid.apple.com 生成） |
+| `APPLE_TEAM_ID` | macOS 公证 | 团队 ID（开发者后台 Membership 页） |
+| `CUBELOOM_KEYSTORE_B64` | Android | release keystore 的 base64（可选） |
+| `CUBELOOM_KEYSTORE_PASSWORD` / `CUBELOOM_KEY_ALIAS` / `CUBELOOM_KEY_PASSWORD` | Android | 对应 keystore 的口令/别名 |
+
+- Windows 只配 `WIN_CSC_LINK` 即可签名；macOS 只配 `CSC_LINK` 会签名但不公证（CI 会打 warning）。
+- macOS 公证需要 **Hardened Runtime**，`tools/build.mjs` 已经打开，并在
+  `packaging/desktop/entitlements.mac.plist` 里放开了 Electron 需要的 JIT 与原生库加载。
+- Linux 的 AppImage 不做签名。
+- 配了证书的那一端会带 `--config.forceCodeSigning=true`：签名失败会直接让构建失败，不会悄悄产出未签名包。
+- 本地验证（需要 electron-builder 26）：
+
+  ```bash
+  npm run build
+  CSC_LINK=file:///path/to/cert.p12 CSC_KEY_PASSWORD=*** \
+    npx --yes electron-builder@26 --project build/desktop --mac
+  ```
 
 ### 从源码构建
 

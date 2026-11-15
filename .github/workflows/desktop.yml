@@ -13,6 +13,11 @@ jobs:
   desktop:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      # 有没有签名证书（在 if 里不能直接用 secrets，所以先落到 env）
+      HAS_WIN_CERT: ${{ secrets.WIN_CSC_LINK != '' || secrets.CSC_LINK != '' }}
+      HAS_MAC_CERT: ${{ secrets.CSC_LINK != '' }}
+      HAS_APPLE_NOTARY: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +43,7 @@ jobs:
           cache: false
       - name: 解压网易机器人（内置到安装包）
         run: npm run setup:netease-bot
-      - name: 构建原生网易引擎（Linux/macOS，不用 Wine）
+      - name: 构建原生网易引擎
         if: matrix.os != 'windows-latest'
         env:
           FB_ENGINE_JOBS: '4'
@@ -68,8 +73,57 @@ jobs:
         run: npm run build
       - name: 校验登录助手已进包
         run: node -e "const fs=require('fs');const hit=['x19login','x19login.exe'].filter(f=>fs.existsSync('build/server/'+f));if(!hit.length)throw new Error('build/server 里没有 x19login');console.log('x19login:',hit.join(', '))"
-      - name: 打包（未签名）
-        run: npx --yes electron-builder@26 --project build/desktop ${{ matrix.target }} --publish never
+      - name: 打包（自动签名：有证书就签，没证书就出未签名包）
+        shell: bash
+        env:
+          # macOS：Developer ID Application 证书 + 公证账号
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows：Authenticode 证书（.pfx 的 base64）
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          FLAGS=()
+          os="${{ matrix.os }}"
+          if [ "$os" = "macos-latest" ] && [ "$HAS_MAC_CERT" = "true" ]; then
+            echo "macOS 证书已配置：签名 + Hardened Runtime"
+            if [ "$HAS_APPLE_NOTARY" = "true" ]; then
+              echo "公证凭据已配置：提交 Apple 公证"
+              FLAGS+=(--config.mac.notarize=true)
+            else
+              echo "::warning title=未配置公证::只有 CSC_LINK，没有 APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID，产物会签名但不会公证"
+            fi
+            FLAGS+=(--config.forceCodeSigning=true)
+          fi
+          if [ "$os" = "windows-latest" ] && [ "$HAS_WIN_CERT" = "true" ]; then
+            echo "Windows 证书已配置：Authenticode 签名"
+            FLAGS+=(--config.forceCodeSigning=true)
+          fi
+          if [ "$os" = "ubuntu-latest" ]; then
+            echo "Linux 不发签名证书（AppImage 不签）"
+          fi
+          npx --yes electron-builder@26 --project build/desktop ${{ matrix.target }} --publish never "${FLAGS[@]}"
+      - name: 打印签名结果
+        shell: bash
+        run: |
+          echo "== dist-app =="
+          ls -lh dist-app || true
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            if command -v signtool >/dev/null 2>&1; then
+              for f in dist-app/*.exe; do [ -e "$f" ] && signtool verify /pa /v "$f" || true; done
+            fi
+          elif [ "${{ matrix.os }}" = "macos-latest" ]; then
+            for app in "dist-app/mac"*/Cubeloom.app; do
+              [ -d "$app" ] || continue
+              codesign -dv --verbose=4 "$app" 2>&1 | head -20 || true
+              spctl -a -vvv -t exec "$app" 2>&1 || true
+            done
+          fi
+
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:

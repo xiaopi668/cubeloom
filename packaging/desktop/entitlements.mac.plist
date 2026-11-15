@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS 签名/公证用的 entitlements。
+
+  Electron 需要 JIT，公证要求 Hardened Runtime，而默认的 Hardened Runtime
+  会禁掉 JIT 与未签名内存，所以这几个例外必须显式声明：
+    - allow-jit：V8 的 JIT
+    - allow-unsigned-executable-memory：部分原生模块
+    - disable-library-validation：加载自带的 .so/.dylib（网易引擎、Python）
+
+  这里是主进程用的一份，entitlementsInherit 也复用它；如果以后引入新的
+  原生 helper（例如单独签名的子进程），再拆出 child 版本。
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

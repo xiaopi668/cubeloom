@@ -112,6 +112,11 @@ if (!onlyServer) {
     path.join(ROOT, "packaging", "desktop", "electron-main.cjs"),
     path.join(DESKTOP, "electron-main.cjs")
   );
+  // macOS 公证要的 entitlements（Hardened Runtime 下放开 JIT/原生库加载）
+  fs.copyFileSync(
+    path.join(ROOT, "packaging", "desktop", "entitlements.mac.plist"),
+    path.join(DESKTOP, "entitlements.mac.plist")
+  );
   // 可选：把 netease-bot/ 一起带进桌面端/便携版（没有就跳过）
   const botDir = path.join(ROOT, "netease-bot");
   if (fs.existsSync(botDir)) {
@@ -136,8 +141,17 @@ if (!onlyServer) {
       files: ["electron-main.cjs", "server/**", "admin/**", "netease-bot/**", "package.json"],
       directories: { output: "../../dist-app" },
       linux: { target: ["AppImage", "tar.gz"], category: "Utility" },
+      // 签名靠环境变量：WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD（没有就跳过，产物仍是未签名）
       win: { target: ["nsis", "zip"] },
-      mac: { target: ["dmg", "zip"], category: "public.app-category.utilities" },
+      mac: {
+        target: ["dmg", "zip"],
+        category: "public.app-category.utilities",
+        // 公证要求 Hardened Runtime；entitlements 里放开了 JIT 与原生库加载
+        hardenedRuntime: true,
+        gatekeeperAssess: false,
+        entitlements: "entitlements.mac.plist",
+        entitlementsInherit: "entitlements.mac.plist",
+      },
     },
   };
   fs.writeFileSync(path.join(DESKTOP, "package.json"), JSON.stringify(appPkg, null, 2) + "\n");

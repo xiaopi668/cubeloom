@@ -11,7 +11,7 @@ on:
 
 jobs:
   android:
-    name: APK (debug)
+    name: APK (release)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -126,7 +126,7 @@ npm run build          # 预编译 build/{server,desktop,portable,mobile}，打�
 |---|---|
 | `build/server/` | `node build/server/admin-server.cjs`，纯服务端 |
 | `build/portable/` | 便携版（系统 Node ≥ 20） |
-| `build/desktop/` | Electron 工程目录（`npm run dist:*`） |
+| `build/desktop/` | Electron 工程目录（`npm run dist:*`；`build/desktop/package.json` 里的 `build.mac` 已开 Hardened Runtime + entitlements） |
 | `build/mobile/nodejs-project/` | Node 18 bundle，给 nodejs-mobile 做 APK |
 
 打包相关的环境变量：`FB_APP_ROOT`（可写根，userData）、`FB_WS_ENTRY`（预编译 WS 入口）、

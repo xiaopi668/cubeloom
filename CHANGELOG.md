@@ -3,6 +3,15 @@
 版本号在 `package.json`（`version`）和 `packaging/android/app/build.gradle`（`versionName` / `versionCode`）两处同步。
 0.1.6 之前有 git tag（`v0.1.2` … `v0.1.6`）；之后按功能批次归纳，逐条提交见 GitHub 提交历史。
 
+## 未发布
+
+**桌面端代码签名**
+
+- `desktop.yml` 接入签名：Windows `WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD`（Authenticode），macOS `CSC_LINK`/`CSC_KEY_PASSWORD` + `APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD`/`APPLE_TEAM_ID`（公证）
+- macOS 打开 Hardened Runtime，新增 `packaging/desktop/entitlements.mac.plist`（JIT / 未签名内存 / 原生库加载）
+- 有证书时带 `--config.forceCodeSigning=true`，签名失败直接构建失败；没证书仍出未签名包
+- Android 签名仍走 `CUBELOOM_KEYSTORE_B64` 等 secrets（README「代码签名」有完整表）
+
 ## 0.2.0
 
 > 版本号从 0.1.x 跳到 0.2.0：组件领取（PE 通道）这条主链路打通，按语义化版本给到 0.2。

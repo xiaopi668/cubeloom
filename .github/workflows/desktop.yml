@@ -85,6 +85,8 @@ jobs:
           # Windows：Authenticode 证书（.pfx 的 base64）
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          # 没证书时明确关掉自动发现，避免 electron-builder 拿空 CSC_LINK 去签名然后失败
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
         run: |
           set -euo pipefail
           FLAGS=()

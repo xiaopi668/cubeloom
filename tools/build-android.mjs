@@ -135,9 +135,24 @@ function build() {
   console.log(`\nAPK: ${path.relative(ROOT, out)}（${size} MB）`);
 }
 
+/** 把事件桥插件同步进 Android 引擎脚本目录（engine scripts 是预生成的，不能只改源码） */
+function syncBridgePlugin() {
+  const src = path.join(ROOT, "packaging", "netease-bot", "bridge", "cubeloom_bridge");
+  const dst = path.join(ASSETS, "..", "..", "..", "assets", "engine", "scripts", "cubeloom_bridge");
+  // ASSETS = app/src/main/assets/nodejs-project → ../../../engine/scripts
+  const target = path.resolve(APP, "src", "main", "assets", "engine", "scripts", "cubeloom_bridge");
+  if (!fs.existsSync(path.join(target, "cubeloom_bridge"))) {
+    console.log("跳过事件桥插件同步：Android 引擎脚本目录不存在");
+    return;
+  }
+  fs.cpSync(src, target, { recursive: true });
+  console.log("事件桥插件已同步到 Android 引擎脚本目录");
+}
+
 ensureMobileBuild();
 const pkgDir = ensureNodejsMobile();
 prepareNative(pkgDir);
 installEngineLibs();
+syncBridgePlugin();
 writeLocalProperties();
 build();

@@ -25,7 +25,7 @@ import {
 } from "./src/netease-bridge";
 import { ManagedBot } from "./src/netease-bot";
 import { structureCommands, ParsedStructure } from "./src/structure";
-import { parseStructureFile } from "./src/formats";
+import { parseStructureFile, stripStructureExtension } from "./src/formats";
 import { describeBaseline, checkBotProtocol, effectiveProtocolVersion, gameVersionFor, NETEASE_PROTOCOL } from "./src/netease-protocol";
 
 const APP_NAME = "Cubeloom-NetEase";
@@ -385,6 +385,19 @@ async function startImport(st: ParsedStructure, offsetY: number): Promise<{ ok: 
   if (!pos) return { ok: false, error: "拿不到机器人坐标" };
   const origin = { x: Math.floor(pos.x), y: Math.floor(pos.y) + Math.trunc(offsetY), z: Math.floor(pos.z) };
   const cmds = structureCommands(st, origin, 0);
+  const meta = (st.commandBlocks ?? []).map((cb) => ({
+    x: origin.x + cb.x,
+    y: origin.y + cb.y,
+    z: origin.z + cb.z,
+    mode: cb.mode,
+    needsRedstone: cb.needsRedstone,
+    conditional: cb.conditional,
+    tickDelay: cb.tickDelay,
+    executeOnFirstTick: cb.executeOnFirstTick,
+    command: cb.command,
+    name: cb.customName || "",
+  }));
+  const totalOps = cmds.length + meta.length;
   // 快照：结构 + 原点 + 名称来自同一次 build，校验只认它（P1-13）
   const snap = createVerifySnapshot({
     st,
@@ -399,7 +412,7 @@ async function startImport(st: ParsedStructure, offsetY: number): Promise<{ ok: 
     name: st.name,
     total: st.total,
     sent: 0,
-    commands: cmds.length,
+    commands: totalOps,
     origin,
     startedAt: Date.now(),
     done: false,
@@ -408,12 +421,16 @@ async function startImport(st: ParsedStructure, offsetY: number): Promise<{ ok: 
     stepLabel: "放置方块",
   };
   importStartedAt = Date.now();
-  log(`开始导入「${st.name}」：${st.size.x}×${st.size.y}×${st.size.z}，${st.total} 方块 / ${cmds.length} 条命令，原点 ${origin.x},${origin.y},${origin.z}`);
+  log(
+    `开始导入「${st.name}」：${st.size.x}×${st.size.y}×${st.size.z}，${st.total} 方块 / ${cmds.length} 条命令 / ${meta.length} 个命令块更新，原点 ${origin.x},${origin.y},${origin.z}`
+  );
   log(`已登记校验快照 #${snap.id} ${snap.fingerprint}（结构名/原点/尺寸一起冻结，重新上传即失效）`);
   chat(`§e第 1/3 步：放置方块「${st.name}」 ${st.size.x}×${st.size.y}×${st.size.z}，共 ${st.total} 方块`);
   actionbar(`§e第 1/3 步 放置「${st.name}」 ${bar(0, cmds.length)}`);
 
   let idx = 0;
+  let metaIdx = 0;
+  let lastMetaTp: { x: number; y: number; z: number } | null = null;
   let lastBar = 0;
   const tick = () => {
     buildTimer = null;
@@ -431,14 +448,35 @@ async function startImport(st: ParsedStructure, offsetY: number): Promise<{ ok: 
       const c = cmds[idx++];
       bridge.commandNoWait(`/${c.command}`);
       build.sent++;
+    } else if (metaIdx < meta.length) {
+      const m = meta[metaIdx];
+      // 命令块更新要离得够近才不会被服务端丢掉：远距离先 /tp @s 过去
+      if (
+        !lastMetaTp ||
+        Math.abs(m.x - lastMetaTp.x) + Math.abs(m.y - lastMetaTp.y) + Math.abs(m.z - lastMetaTp.z) > 16
+      ) {
+        bridge.commandNoWait(`/tp @s ${m.x} ${m.y} ${m.z}`);
+        lastMetaTp = { x: m.x, y: m.y, z: m.z };
+        build.sent++;
+      } else {
+        bridge.commandUpdateNoWait(m);
+        metaIdx++;
+        build.sent++;
+      }
     }
-    if (Date.now() - lastBar > 1200 || idx >= cmds.length) {
+    const doneOps = idx + metaIdx;
+    if (Date.now() - lastBar > 1200 || doneOps >= totalOps) {
       lastBar = Date.now();
-      actionbar(`§e第 1/3 步 放置「${build.name}」 ${bar(idx, cmds.length)} §7(${CMD_RATE}/秒)`);
+      const label = idx < cmds.length ? "放置" : "补命令块";
+      actionbar(
+        `§e第 1/3 步 ${label}「${build.name}」 ${bar(doneOps, totalOps)} §7(${CMD_RATE}/秒)`
+      );
     }
-    if (idx >= cmds.length) {
+    if (idx >= cmds.length && metaIdx >= meta.length) {
       setStep(2, "完整性校验");
-      log(`「${st.name}」第 1 步完成（${cmds.length} 条命令，限速 ${CMD_RATE}/秒），2 秒后进入第 2 步校验`);
+      log(
+        `「${st.name}」第 1 步完成（${cmds.length} 条方块命令 + ${meta.length} 个命令块更新，限速 ${CMD_RATE}/秒），2 秒后进入第 2 步校验`
+      );
       build.stepLabel = "完整性校验";
       setTimeout(() => {
         verifyStructure(false)
@@ -543,7 +581,7 @@ const server = createServer(async (req, res) => {
 
     if (p === "/prepare" && req.method === "POST") {
       const body = await readJson(req);
-      const name = String(body.name ?? "structure").replace(/\.mcstructure$/i, "").trim().slice(0, 80) || "structure";
+      const name = stripStructureExtension(String(body.name ?? "structure")).trim().slice(0, 80) || "structure";
       const data = String(body.data ?? "");
       if (!data) return json(res, 400, { ok: false, error: "缺少文件数据" });
       let buf: Buffer;
@@ -565,7 +603,14 @@ const server = createServer(async (req, res) => {
       log(`已解析结构「${name}」：${st.size.x}×${st.size.y}×${st.size.z}，${st.total} 方块（pending #${pendingSeq}）`);
       return json(res, 200, {
         ok: true,
-        structure: { name: st.name, size: st.size, total: st.total, paletteSize: st.paletteSize, materials: st.materials },
+        structure: {
+          name: st.name,
+          size: st.size,
+          total: st.total,
+          paletteSize: st.paletteSize,
+          materials: st.materials,
+          issues: st.issues ?? [],
+        },
         pendingSeq,
         /** 旧快照已清空：面板/CLI 看到 needsBuild 就知道要重新 build 才能校验 */
         needsBuild: true,

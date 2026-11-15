@@ -23,6 +23,21 @@ import type { NbtValue } from "./nbt-write";
 
 export type StructureBlock = { x: number; y: number; z: number; block: string };
 
+/** 命令方块元数据（坐标相对结构最小角，与 ParsedStructure.blocks 一致） */
+export type CommandBlockUpdate = {
+  x: number;
+  y: number;
+  z: number;
+  /** 0=脉冲 1=循环 2=连锁 */
+  mode: number;
+  needsRedstone: boolean;
+  conditional: boolean;
+  tickDelay: number;
+  executeOnFirstTick: boolean;
+  command: string;
+  customName: string;
+};
+
 export type ParsedStructure = {
   name: string;
   size: { x: number; y: number; z: number };
@@ -35,6 +50,8 @@ export type ParsedStructure = {
   materials: string[];
   /** 解析提醒（未映射的方块名等）；没有提醒时不设该字段 */
   issues?: string[];
+  /** 命令方块内容（.vt 等格式）；没有时不设该字段 */
+  commandBlocks?: CommandBlockUpdate[];
 };
 
 export type BuildCommand = { command: string; count: number };

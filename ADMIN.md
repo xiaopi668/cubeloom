@@ -303,24 +303,30 @@ WebSocket 版需要游戏客户端能 `/connect`；网易版走不了这条路�
 - `/opt/netease-bot/config.json`（`chmod 600`）：房间号/密码/账号 Cookie/密钥包（**凭据，严禁外传**）
 - 启停：`systemctl restart cubeloom-netease`（机器人本身是 `/opt/netease-bot` 下的独立进程）
 
-## 投影文件导入（.litematic / .schem / .schematic / .nbt）
+## 投影文件导入（.mcstructure / .bdx / .vt / .litematic / .schem / .schematic / .nbt）
 
-除了 Bedrock 的 `.mcstructure`，现在也支持 Java 版「投影文件」，上传后自动识别格式：
+上传后按文件头自动识别格式，不依赖扩展名：
 
 | 格式 | 来源 | 说明 |
 | --- | --- | --- |
-| `.mcstructure` | 基岩版结构方块 | 原支持 |
+| `.mcstructure` | 基岩版结构方块 | 未压缩 little-endian NBT，带方块状态；允许前置自定义头（自动扫起点）与 gzip 包裹 |
+| `.bdx` | FastBuilder / PhoenixBuilder | `BD@` + brotli + 操作流；字符串表与旧版 data 都会还原，颜色按 1.20 的独立 identifier 折叠 |
 | `.litematic` | Litematica 投影 | gzip + 大端 NBT，自动解 BlockStates 位打包（含负尺寸区域） |
 | `.schem` | Sponge 原理图 v1/v2/v3 | 变长整数 `BlockData` |
 | `.schematic` | MCEdit / WorldEdit 经典原理图 | `Blocks` 字节数组 + `AddBlocks` 高位；带 `Palette` 时按调色板映射 |
 | `.nbt` | Java 结构方块导出 | `size` / `palette` / `blocks` |
+| `.vt` | VQ / Vector 建筑 | `VTVB` 容器 + AES-256-CBC + Deflate；方块/状态/命令方块内容还原，告示牌文字暂未还原 |
+| `.mcworld` / `.zip` | 世界存档 / 压缩包 | 从包里挑一个结构文件解析（优先 `.mcstructure`，其次 `.bdx` / `.litematic` / `.schem` / `.nbt`） |
 
-- 自动识别：按文件头（gzip / NBT 根节点）判断，不依赖扩展名
-- 目前只还原**方块 ID**，忽略方块状态（楼梯朝向、半砖、告示牌文字等不还原）
+- 自动识别：按文件头（BDX / ZIP / gzip / NBT 根节点）判断，不依赖扩展名
+- `.mcstructure`、`.bdx`、`.vt` 会还原方块状态（楼梯朝向、半砖、颜色等）；Java 投影文件只还原方块名
+- `.vt` 的命令方块内容通过引擎 `command_update` 补写（更新前会 `/tp` 到附近）；告示牌文字需要 BlockActorData，暂未还原
 - 坐标会自动平移到最小角为 `(0,0,0)`，尺寸取实际包围盒
 - 后台「导入结构 / 投影文件」面板直接选文件即可，解析后按三步流程导入
+- `.mcworld` 是**世界存档**（`level.dat` + `db/`），本身不是结构；直接上传会提示改用结构方块导出。如果存档里带 `structures/*.mcstructure`，会自动取出来
 
 > 注：`.schematic` 若使用旧版数字 ID 且没有 `Palette`，会按内置常见 ID 表映射；无法识别的 ID 会被跳过。
+> BDX 若使用「运行时方块 ID 池」（操作 31/32…），需要按游戏版本查表才能还原，解析会直接报错；请用 FastBuilder / BDXConverter 导出「字符串方块」版本。
 
 
 ## 顶部 HUD（仿 PasteCraft-Builder）

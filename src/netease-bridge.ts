@@ -100,6 +100,7 @@ export class NeteaseBridge {
       this.connected = true;
       this.authSent = false;
       this.buf = "";
+      this.lastError = "";
       this.log(`已连接事件桥：${this.opts.socketPath}`);
     });
     s.on("data", (chunk: string) => {
@@ -112,8 +113,18 @@ export class NeteaseBridge {
       }
     });
     s.on("error", (e: any) => {
-      this.lastError = String(e?.message ?? e);
-      this.log(`事件桥错误：${this.lastError}`);
+      const message = String(e?.message ?? e);
+      const changed = message !== this.lastError;
+      this.lastError = message;
+      // 引擎没进房间/世界时 17999 不会监听，3 秒一次的重连会一直 ECONNREFUSED；
+      // 只记一次并说明原因，别让日志看起来像故障。
+      if (changed) {
+        this.log(
+          /ECONNREFUSED/.test(message)
+            ? `事件桥未就绪：${message}（引擎加入房间/世界后才会监听，连上会自动恢复）`
+            : `事件桥错误：${message}`
+        );
+      }
     });
     s.on("close", () => {
       this.connected = false;
@@ -247,6 +258,40 @@ export class NeteaseBridge {
   /** 执行原版指令，不等回执 */
   commandNoWait(text: string): void {
     this.requestNoWait("command_nowait", { text: text.startsWith("/") ? text : `/${text}` });
+  }
+
+  /** 补写命令方块内容（NTvector 的 engine.command_update） */
+  async commandUpdate(
+    payload: {
+      x: number;
+      y: number;
+      z: number;
+      mode: number;
+      needsRedstone: boolean;
+      conditional: boolean;
+      tickDelay: number;
+      executeOnFirstTick: boolean;
+      command: string;
+      name?: string;
+    },
+    timeoutMs = 10000
+  ): Promise<BridgeResult> {
+    return this.request("command_update", payload, timeoutMs);
+  }
+
+  commandUpdateNoWait(payload: {
+    x: number;
+    y: number;
+    z: number;
+    mode: number;
+    needsRedstone: boolean;
+    conditional: boolean;
+    tickDelay: number;
+    executeOnFirstTick: boolean;
+    command: string;
+    name?: string;
+  }): void {
+    this.requestNoWait("command_update_nowait", payload);
   }
 
   /** 机器人已确认的坐标 */

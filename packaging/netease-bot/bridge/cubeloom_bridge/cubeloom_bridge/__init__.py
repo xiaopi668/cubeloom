@@ -3,7 +3,7 @@
 Cubeloom 事件桥插件（NTvector 插件 / source 模式）
 
 把 NTvector 的指令与聊天事件转成 Cubeloom 需要的 NDJSON 协议：
-  客户端 → 机器人：{"type":"command","cmd":"command|command_nowait|pos|identity|players|get_block","args":{...},"id":"..."}
+  客户端 → 机器人：{"type":"command","cmd":"command|command_nowait|command_update|command_update_nowait|pos|identity|players|get_block","args":{...},"id":"..."}
   机器人 → 客户端：{"type":"hello"} / {"type":"auth_ok"} / {"type":"result","id":...} / {"type":"event",...}
 
 用本机 TCP（127.0.0.1）而不是 UNIX socket：Windows 下更省事，跨平台一致。
@@ -99,6 +99,31 @@ def _handle_command(msg):
             engine.command(text)
             if cmd == "command":
                 _reply(msg, True, {"statusCode": 0, "message": "sent"})
+            return
+        if cmd in ("command_update", "command_update_nowait"):
+            def _flag(v):
+                if isinstance(v, bool):
+                    return v
+                if isinstance(v, (int, float)):
+                    return v != 0
+                return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+            x = int(round(float(args.get("x", 0))))
+            y = int(round(float(args.get("y", 0))))
+            z = int(round(float(args.get("z", 0))))
+            mode = int(args.get("mode", 0) or 0)
+            command = str(args.get("command", "") or "")
+            name = str(args.get("name", "") or "")
+            engine.command_update(
+                x, y, z, mode,
+                _flag(args.get("needsRedstone", False)),
+                _flag(args.get("conditional", False)),
+                int(args.get("tickDelay", 0) or 0),
+                _flag(args.get("executeOnFirstTick", False)),
+                command, name,
+            )
+            if cmd == "command_update":
+                _reply(msg, True, {"statusCode": 0, "message": "updated"})
             return
         if cmd == "pos":
             x, y, z = engine.get_pot_x(), engine.get_pot_y(), engine.get_pot_z()

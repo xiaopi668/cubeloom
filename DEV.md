@@ -24,7 +24,9 @@ src/
   session.ts         会话、--login 认证、连接限流、消息回执
   structure.ts       ParsedStructure → setblock/fill 命令
   structure-repair.ts 损坏 .mcstructure 修补（有损，见维护手册）
-  formats.ts         多格式识别（.mcstructure/.litematic/.schem/.schematic/.nbt）
+  formats.ts         多格式识别（.mcstructure/.bdx/.litematic/.schem/.schematic/.nbt，.mcworld/.zip 取包内结构）
+  bdx.ts             BDX（PhoenixBuilder）指令流解析
+  zip.ts             极简 ZIP 读取（.mcworld/.zip）
   nbt.ts             基岩版小端 NBT 读
   java-nbt.ts        Java 版大端 NBT 读
   nbt-write.ts       基岩版 NBT 写（只支持 int/string/list/compound）

@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Cubeloom">
+  <title>Cubeloom</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070d1a"/>
+      <stop offset=".52" stop-color="#0d1830"/>
+      <stop offset="1" stop-color="#0a1122"/>
+    </linearGradient>
+    <radialGradient id="aura" cx=".5" cy=".36" r=".62">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity=".30"/>
+      <stop offset=".45" stop-color="#3b82f6" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#3b82f6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cffafe"/>
+      <stop offset=".45" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#22b8d8"/>
+    </linearGradient>
+    <linearGradient id="left" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1d3f9e"/>
+    </linearGradient>
+    <linearGradient id="right" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6d6ff7"/>
+      <stop offset="1" stop-color="#343093"/>
+    </linearGradient>
+    <linearGradient id="thread" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset=".18" stop-color="#e0fbff"/>
+      <stop offset=".5" stop-color="#ffffff"/>
+      <stop offset=".82" stop-color="#a5f3fc"/>
+      <stop offset="1" stop-color="#a5f3fc" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="voxTop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ecfeff"/>
+      <stop offset="1" stop-color="#7dd3fc"/>
+    </linearGradient>
+    <filter id="blur" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="clipTop"><path d="M512 232 L784 389 L512 546 L240 389 Z"/></clipPath>
+    <clipPath id="clipLeft"><path d="M240 389 L512 546 L512 860 L240 703 Z"/></clipPath>
+    <clipPath id="clipRight"><path d="M784 389 L512 546 L512 860 L784 703 Z"/></clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="228" fill="url(#aura)"/>
+
+  <g opacity=".055" stroke="#7dd3fc" stroke-width="2">
+    <path d="M-120 300 L700 900 M20 160 L840 760 M160 20 L980 620 M-260 440 L560 1040 M-120 580 L700 1180"/>
+    <path d="M1120 300 L300 900 M980 160 L160 760 M840 20 L20 620 M1240 440 L420 1040 M1120 580 L300 1180"/>
+  </g>
+
+  <ellipse cx="512" cy="902" rx="296" ry="46" fill="#020617" opacity=".62" filter="url(#blur)"/>
+
+  <path d="M512 232 L784 389 L512 546 L240 389 Z" fill="url(#top)"/>
+  <path d="M240 389 L512 546 L512 860 L240 703 Z" fill="url(#left)"/>
+  <path d="M784 389 L512 546 L512 860 L784 703 Z" fill="url(#right)"/>
+
+  <g clip-path="url(#clipTop)" stroke="#0b3a4a" stroke-opacity=".18" stroke-width="2.4">
+      <line x1="557.3" y1="258.2" x2="285.3" y2="415.2" />
+      <line x1="602.7" y1="284.3" x2="330.7" y2="441.3" />
+      <line x1="648.0" y1="310.5" x2="376.0" y2="467.5" />
+      <line x1="693.3" y1="336.7" x2="421.3" y2="493.7" />
+      <line x1="738.7" y1="362.8" x2="466.7" y2="519.8" />
+      <line x1="466.7" y1="258.2" x2="738.7" y2="415.2" />
+      <line x1="421.3" y1="284.3" x2="693.3" y2="441.3" />
+      <line x1="376.0" y1="310.5" x2="648.0" y2="467.5" />
+      <line x1="330.7" y1="336.7" x2="602.7" y2="493.7" />
+      <line x1="285.3" y1="362.8" x2="557.3" y2="519.8" />
+  </g>
+  <g clip-path="url(#clipLeft)" stroke="#071a3f" stroke-opacity=".22" stroke-width="2.4">
+      <line x1="294.4" y1="420.4" x2="294.4" y2="734.4" />
+      <line x1="348.8" y1="451.8" x2="348.8" y2="765.8" />
+      <line x1="403.2" y1="483.2" x2="403.2" y2="797.2" />
+      <line x1="457.6" y1="514.6" x2="457.6" y2="828.6" />
+      <line x1="240.0" y1="451.8" x2="512.0" y2="608.8" />
+      <line x1="240.0" y1="514.6" x2="512.0" y2="671.6" />
+      <line x1="240.0" y1="577.4" x2="512.0" y2="734.4" />
+      <line x1="240.0" y1="640.2" x2="512.0" y2="797.2" />
+  </g>
+  <g clip-path="url(#clipRight)" stroke="#120f3f" stroke-opacity=".24" stroke-width="2.4">
+      <line x1="729.6" y1="420.4" x2="729.6" y2="734.4" />
+      <line x1="675.2" y1="451.8" x2="675.2" y2="765.8" />
+      <line x1="620.8" y1="483.2" x2="620.8" y2="797.2" />
+      <line x1="566.4" y1="514.6" x2="566.4" y2="828.6" />
+      <line x1="784.0" y1="451.8" x2="512.0" y2="608.8" />
+      <line x1="784.0" y1="514.6" x2="512.0" y2="671.6" />
+      <line x1="784.0" y1="577.4" x2="512.0" y2="734.4" />
+      <line x1="784.0" y1="640.2" x2="512.0" y2="797.2" />
+  </g>
+
+  <g fill="none" stroke="#ffffff" stroke-opacity=".16" stroke-width="3" stroke-linejoin="round">
+    <path d="M512 232 L784 389 L784 703 L512 860 L240 703 L240 389 Z"/>
+    <path d="M240 389 L512 546 L784 389 M512 546 L512 860"/>
+  </g>
+
+  <g filter="url(#glow)" fill="none" stroke-linecap="round">
+    <path d="M150 512 C260 470 350 436 452 432 C520 430 566 452 620 486 C676 520 744 520 860 468"
+          stroke="url(#thread)" stroke-width="9" opacity=".92"/>
+    <path d="M150 512 C260 470 350 436 452 432 C520 430 566 452 620 486 C676 520 744 520 860 468"
+          stroke="#ffffff" stroke-width="2.2" opacity=".85"/>
+  </g>
+
+  <g>
+    <path d="M704 168 L758 199 L704 230 L650 199 Z" fill="url(#voxTop)"/>
+    <path d="M650 199 L704 230 L704 294 L650 263 Z" fill="#38bdf8"/>
+    <path d="M758 199 L704 230 L704 294 L758 263 Z" fill="#2563eb"/>
+    <path d="M704 168 L758 199 L704 230 L650 199 Z" fill="none" stroke="#ecfeff" stroke-opacity=".7" stroke-width="2.5"/>
+  </g>
+
+  <g fill="#a5f3fc" filter="url(#glow)">
+    <circle cx="612" cy="170" r="5"/>
+    <circle cx="786" cy="176" r="3.6" opacity=".8"/>
+    <circle cx="828" cy="330" r="3" opacity=".6"/>
+  </g>
+  <rect x="1.5" y="1.5" width="1021" height="1021" rx="226.5" fill="none" stroke="#ffffff" stroke-opacity=".06" stroke-width="3"/>
+</svg>

@@ -100,6 +100,8 @@ export type X19PostOptions = {
   fetchImpl?: FetchLike;
   timeoutMs?: number;
   host?: string;
+  /** 这些业务 code 不抛错，交给调用方处理（例如进房 501 = 组件未购买） */
+  allowCodes?: string[];
 };
 
 /**
@@ -144,7 +146,7 @@ export async function x19Post<T = any>(
     throw new X19ApiError(`网易接口 ${path} 返回的不是 JSON：${text.slice(0, 120)}`, "bad-json", res.status);
   }
   const code = data?.code;
-  if (code !== undefined && String(code) !== "0") {
+  if (code !== undefined && String(code) !== "0" && !opts.allowCodes?.includes(String(code))) {
     const message = String(data?.message || data?.msg || data?.errmsg || `code=${code}`);
     throw new X19ApiError(`网易接口 ${path} 失败：${message}`, String(code), res.status);
   }
@@ -260,6 +262,8 @@ export type LobbyRoom = {
   maxCount: number;
   version: string;
   lobbyManifestVersion: string;
+  /** 房间绑定的组件/资源 ID（带 mod 的房间才会有） */
+  resId: string;
 };
 
 /** 联机大厅：按房间号/名称搜索 */
@@ -289,6 +293,7 @@ export async function searchLobbyRooms(
         maxCount: Number(item?.max_count ?? 0) || 0,
         version: String(item?.version ?? ""),
         lobbyManifestVersion: String(item?.lobby_manifest_version ?? ""),
+        resId: String(item?.res_id ?? ""),
       };
     })
     .filter((r) => !!r.entityId);
@@ -301,13 +306,30 @@ export async function resolveLobbyAddress(
   cred: X19Credential,
   opts: X19PostOptions = {}
 ): Promise<RentalAddress> {
-  const enterBody = JSON.stringify({
+  const enterPayload: Record<string, any> = {
     room_id: room.entityId,
     password: String(password ?? ""),
     lobby_manifest_version: room.lobbyManifestVersion || "",
     check_visibilily: true,
-  });
-  await x19Post("/online-lobby-room-enter", enterBody, cred, { ...opts, host: LOBBY_HOST });
+  };
+  // 带组件的房间要把资源 ID 一起报给房间服务；原版房间保持旧请求体不变
+  if (room.resId) enterPayload.res_id = room.resId;
+  const enterBody = JSON.stringify(enterPayload);
+  try {
+    await x19Post("/online-lobby-room-enter", enterBody, cred, { ...opts, host: LOBBY_HOST });
+  } catch (e: any) {
+    if (/物品还未获得/.test(String(e?.message ?? e))) {
+      throw new X19ApiError(
+        `房间「${room.name || room.entityId}」带模组（组件），机器人账号还没有获得该组件；` +
+          "请用同一个网易账号在客户端进入一次该房间（或领取组件）后重试" +
+          (e?.code ? `（${e.code}）` : "") +
+          "。也可以先用原版房间验证进房链路。",
+        String(e?.code ?? ""),
+        Number(e?.status ?? 0)
+      );
+    }
+    throw e;
+  }
 
   let data: any;
   try {
@@ -407,6 +429,90 @@ export function parseLocalEndpoint(input: { host?: string; port?: string | numbe
   return { host, port: String(p) };
 }
 
+/**
+ * PE 本地联机：直接按房间号进房（不走搜索）。
+ *
+ * VQ 客户端就是这么做的：本地联机房间不会出现在联机大厅的搜索结果里，但
+ * `/online-lobby-room-enter` 直接用房间号可以进；如果返回 501（组件未购买），
+ * 先调 `/pe-purchase-item/` 领取组件再重试一次。
+ */
+export async function enterPeRoom(
+  roomId: string,
+  password: string,
+  cred: X19Credential,
+  opts: X19PostOptions = {}
+): Promise<{ code: string; message?: string }> {
+  const body = JSON.stringify({
+    room_id: String(roomId),
+    password: String(password ?? ""),
+    lobby_manifest_version: "",
+    check_visibilily: true,
+  });
+  const data = await x19Post<any>("/online-lobby-room-enter", body, cred, {
+    ...opts,
+    host: LOBBY_HOST,
+    allowCodes: ["501"],
+  });
+  return { code: String(data?.code ?? "0"), message: data?.message };
+}
+
+/** PE：领取联机房间绑定的组件（免费组件也会走这里） */
+export async function purchasePeRoomComponent(
+  resId: string,
+  cred: X19Credential,
+  opts: X19PostOptions = {}
+): Promise<void> {
+  const body = JSON.stringify({
+    item_id: String(resId),
+    expertcomment_info: {
+      item_id: String(resId),
+      expertcomment_id: "0",
+      video_url: "0",
+      expert_id: "0",
+      buy_path: `首页-联机大厅-详情页:${resId}`,
+      coupon_ids: [],
+      cdk_code: "",
+    },
+  });
+  await x19Post("/pe-purchase-item/", body, cred, { ...opts, host: RENTAL_HOST });
+}
+
+/**
+ * PE 本地联机：房间号 → host/port。
+ * 进房 →（501 时领取组件重试）→ 取游戏地址 → 退房释放席位。
+ */
+export async function resolvePeLocalRoom(
+  roomId: string,
+  password: string,
+  cred: X19Credential,
+  opts: X19PostOptions = {}
+): Promise<RentalAddress> {
+  const room = String(roomId || "").trim();
+  if (!/^\d{4,8}$/.test(room)) throw new X19ApiError("请填写 4–8 位本地联机房间号");
+
+  let entered = await enterPeRoom(room, password, cred, opts);
+  if (entered.code === "501") {
+    await purchasePeRoomComponent(room, cred, opts);
+    entered = await enterPeRoom(room, password, cred, opts);
+  }
+  if (entered.code !== "0") {
+    const tail = entered.message ? `：${entered.message}` : "";
+    throw new X19ApiError(`本地联机房间 ${room} 进房失败（code=${entered.code}）${tail}`, entered.code);
+  }
+
+  let data: any;
+  try {
+    data = await x19Post<any>("/online-lobby-game-enter", "", cred, { ...opts, host: LOBBY_HOST });
+  } finally {
+    const leaveBody = JSON.stringify({ room_id: room, team_quit: false });
+    x19Post("/online-lobby-room-enter/leave-room", leaveBody, cred, { ...opts, host: LOBBY_HOST }).catch(() => {});
+  }
+  const host = String(data?.entity?.server_host ?? "").trim();
+  const port = String(data?.entity?.server_port ?? "").trim();
+  if (!host || !port) throw new X19ApiError("网易没有返回本地联机地址（房间可能已关闭/人数已满）");
+  return { host, port };
+}
+
 export type EngineLaunchOptions = {
   userId: string;
   token: string;
@@ -421,6 +527,8 @@ export type EngineLaunchOptions = {
   engineVersion?: string;
   patchVersion?: string;
   pluginDir?: string;
+  /** 本地联机/NetherNet：房间号作为 host id，账号 uid 作为 from id */
+  nethernet?: { hostId: string; fromId: string };
   logger?: boolean;
   extraArgs?: string[];
 };
@@ -453,6 +561,9 @@ export function buildEngineArgs(opts: EngineLaunchOptions): string[] {
     "--UserID", userId,
     "--MD5Token", md5TokenBase64(opts.token),
   ];
+  if (opts.nethernet) {
+    args.push("--start_nethernet", "--HostNethernetId", opts.nethernet.hostId, "--FromNethernetId", opts.nethernet.fromId);
+  }
   if (opts.g79 !== false) args.push("--g79");
   if (opts.pluginDir) args.push("--PluginDir", opts.pluginDir);
   if (opts.logger !== false) args.push("--logger");

@@ -26,8 +26,8 @@ import {
   redactEngineArgs,
   joinRealmsByCode,
   listRealms,
-  parseLocalEndpoint,
   resolveLobbyRoom,
+  resolvePeLocalRoom,
   resolveRealmsAddress,
   resolveRentalRoom,
   searchLobbyRooms,
@@ -876,8 +876,9 @@ type AccountCfg = {
   roomPassword: string;
   /** rental / lobby / realms / local */
   roomKind: string;
-  localHost: string;
-  localPort: string;
+  /** 本地联机：房间号（直接进房，不是 IP） */
+  localRoom: string;
+  localPassword: string;
   lobbyVersion: string;
   displayName: string;
   /** 可选：覆盖引擎版本号 / 协议（默认用 VQ PE 的 3.8.x 与引擎内置协议） */
@@ -899,8 +900,8 @@ function readAccountCfg(): AccountCfg {
     room: String(raw.room ?? ""),
     roomPassword: String(raw.roomPassword ?? ""),
     roomKind: ["lobby", "realms", "local"].includes(String(raw.roomKind ?? "")) ? String(raw.roomKind) : "rental",
-    localHost: String(raw.localHost ?? ""),
-    localPort: String(raw.localPort ?? ""),
+    localRoom: String(raw.localRoom ?? raw.localHost ?? ""),
+    localPassword: String(raw.localPassword ?? ""),
     lobbyVersion: String(raw.lobbyVersion ?? ""),
     displayName: String(raw.displayName ?? ""),
     engineVersion: String(raw.engineVersion ?? ""),
@@ -1106,16 +1107,22 @@ async function resolveRoomForPanel(body: any) {
   const rawKind = String(body?.roomKind ?? cfg.roomKind ?? "rental");
   const kind = ["lobby", "realms", "local"].includes(rawKind) ? rawKind : "rental";
 
+  const cred = await ensureCred();
+
   if (kind === "local") {
-    const address = parseLocalEndpoint({
-      host: String(body?.localHost ?? cfg.localHost ?? ""),
-      port: String(body?.localPort ?? cfg.localPort ?? ""),
-      keyword,
-    });
+    const room = String(body?.localRoom ?? cfg.localRoom ?? keyword ?? "").trim();
+    if (!/^\d{4,8}$/.test(room)) throw new Error("请填写 4–8 位本地联机房间号");
+    const passcode = String(body?.localPassword ?? cfg.localPassword ?? password ?? "");
+    let address: Awaited<ReturnType<typeof resolvePeLocalRoom>>;
+    try {
+      address = await resolvePeLocalRoom(room, passcode, { userId: cred.entityId, token: cred.token });
+    } catch (e: any) {
+      throw new Error(`本地联机房间号 ${room} 解析失败：${e?.message ?? e}`);
+    }
     return {
       kind,
-      entityId: "0",
-      name: "本地联机",
+      entityId: room,
+      name: `本地联机 ${room}`,
       hasPwd: false,
       playerCount: 0,
       capacity: 0,
@@ -1123,8 +1130,6 @@ async function resolveRoomForPanel(body: any) {
       port: address.port,
     };
   }
-
-  const cred = await ensureCred();
 
   if (kind === "realms") {
     if (!keyword) throw new Error("请填写山头服 ID 或邀请码");
@@ -1237,13 +1242,13 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) };
   }
-  // 本地联机不需要网易登录：引擎会用自签名链走本地会话
-  const cred =
-    room.kind === "local"
-      ? x19Cred || { entityId: "1", name: "Cubeloom", token: "cubeloom-local", at: Date.now(), expiresAt: Date.now() + 86400_000 }
-      : requireCred();
+  const cred = requireCred();
   const serverKind =
-    room.kind === "lobby" ? "LobbyGame" : room.kind === "realms" ? "DomainGame" : room.kind === "local" ? "LocalGame" : "RentalGame";
+    room.kind === "lobby" || room.kind === "local"
+      ? "LobbyGame"
+      : room.kind === "realms"
+        ? "DomainGame"
+        : "RentalGame";
   let argv: string[];
   try {
     argv = [
@@ -1266,13 +1271,18 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
     return { ok: false, error: e?.message ?? String(e) };
   }
   if (room.kind === "local") {
-    saveAccountCfg({ localHost: room.host, localPort: room.port });
+    saveAccountCfg({
+      localRoom: String(body?.localRoom ?? cfg.localRoom ?? keyword ?? "").trim(),
+      localPassword: String(body?.localPassword ?? cfg.localPassword ?? body?.roomPassword ?? ""),
+    });
   } else if (room.kind !== "realms") {
     saveAccountCfg({ room: keyword, roomPassword: String(body?.roomPassword ?? cfg.roomPassword ?? "") });
   }
   const fullArgv = engineArgvWithWine(argv);
   if (!fullArgv) return { ok: false, error: "找不到 wine，无法在非 Windows 平台启动引擎" };
-  log(`账号模式启动：${room.kind === "lobby" ? "联机大厅" : "租赁服"} ${room.name}（${room.entityId}）→ ${room.host}:${room.port}`);
+  const kindLabel =
+    room.kind === "local" ? "本地联机" : room.kind === "lobby" ? "联机大厅" : room.kind === "realms" ? "山头服" : "租赁服";
+  log(`账号模式启动：${kindLabel} ${room.name}（${room.entityId}）→ ${room.host}:${room.port}`);
   log(`引擎参数：${redactEngineArgs(fullArgv.slice(IS_WIN ? 1 : 2)).join(" ")}`);
   const r = spawnNetease(fullArgv);
   return r.ok ? { ok: true, mode: "account", room } : r;
@@ -2030,8 +2040,8 @@ const server = createServer(async (req, res) => {
       if (typeof body.room === "string") patch.room = body.room.trim();
       if (typeof body.roomPassword === "string") patch.roomPassword = body.roomPassword;
       if (["rental", "lobby", "realms", "local"].includes(String(body.roomKind))) patch.roomKind = body.roomKind;
-      if (typeof body.localHost === "string") patch.localHost = body.localHost.trim();
-      if (typeof body.localPort === "string") patch.localPort = body.localPort.trim();
+      if (typeof body.localRoom === "string") patch.localRoom = body.localRoom.trim();
+      if (typeof body.localPassword === "string") patch.localPassword = body.localPassword;
       if (typeof body.lobbyVersion === "string") patch.lobbyVersion = body.lobbyVersion.trim();
       if (typeof body.displayName === "string") patch.displayName = body.displayName.trim();
       if (typeof body.engineVersion === "string") patch.engineVersion = body.engineVersion.trim();

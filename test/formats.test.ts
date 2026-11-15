@@ -14,15 +14,21 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { inferLitematicBits, parseStructureFile } from "../src/formats";
 import { parseMcStructure, structureCommands } from "../src/structure";
 import {
+  bdxCString,
+  bdxOp,
+  bdxU16,
   gzipFixture,
+  makeBdx,
   makeLitematic,
   makeSchematic,
   makeSponge,
   makeStructure,
   makeStructureEx,
+  makeZip,
 } from "./helpers";
 
 const OAK_STAIRS_STATES = 'minecraft:oak_stairs["minecraft:cardinal_direction"="north","upside_down_bit"=false]';
@@ -278,4 +284,88 @@ test("P1-16：Java → 基岩版方块名映射，未收录的名字保留原名
   assert.ok(parsed.issues && parsed.issues.length === 1, JSON.stringify(parsed.issues));
   assert.match(parsed.issues![0], /未在映射表内/);
   assert.match(parsed.issues![0], /not_a_real_block/);
+});
+
+
+/* ───────────────────────── BDX / .mcworld / 压缩包 ───────────────────────── */
+
+test("BDX：字符串表 + 状态字符串 + 旧版 data 都能还原", () => {
+  const ops = [
+    bdxOp(1, bdxCString("minecraft:concrete")), // 名字 0
+    bdxOp(1, bdxCString('["color"="red"]')), // 状态 1
+    bdxOp(5, Buffer.concat([bdxU16(0), bdxU16(1)])), // (0,0,0) 红混凝土
+    bdxOp(1, bdxCString("wool")), // 名字 2
+    bdxOp(14), // x+1
+    bdxOp(7, Buffer.concat([bdxU16(2), bdxU16(4)])), // (1,0,0) 黄羊毛
+    bdxOp(16), // y+1
+    bdxOp(1, bdxCString("log")), // 名字 3
+    bdxOp(7, Buffer.concat([bdxU16(3), bdxU16(4)])), // (1,1,0) 橡木原木，横放
+    bdxOp(15), // x-1
+    bdxOp(30, Buffer.from([0xff])), // z-1 → (0,1,-1)
+    bdxOp(1, bdxCString("stone")), // 名字 4
+    bdxOp(13, Buffer.concat([bdxU16(4), bdxCString('["stone_type"="granite"]')])),
+  ];
+  const parsed = parseStructureFile(makeBdx(ops), "bdx");
+  assert.deepEqual(parsed.size, { x: 2, y: 2, z: 2 });
+  assert.deepEqual(
+    parsed.blocks.map((b) => `${b.x},${b.y},${b.z}=${b.block}`),
+    [
+      "0,0,1=minecraft:red_concrete",
+      "0,1,0=minecraft:stone[\"stone_type\"=\"granite\"]",
+      "1,0,1=minecraft:yellow_wool",
+      "1,1,1=minecraft:oak_log[\"pillar_axis\"=\"x\"]",
+    ]
+  );
+});
+
+test("BDX：运行时方块 ID 池给出明确错误，不猜方块", () => {
+  const ops = [
+    bdxOp(31, Buffer.from([117])),
+    bdxOp(32, bdxU16(1)),
+  ];
+  assert.throws(() => parseStructureFile(makeBdx(ops), "runtime"), /运行时方块 ID 池/);
+});
+
+test("压缩包：.mcworld/.zip 里取 .mcstructure（含 deflate 条目）", () => {
+  const inner = makeStructure({ size: [1, 1, 1], palette: ["minecraft:stone"], indices: [0] });
+  const zip = makeZip([
+    { name: "level.dat", data: Buffer.from([0x0a, 0x00, 0x00, 0x00]) },
+    { name: "db/CURRENT", data: Buffer.from("MANIFEST-000001") },
+    { name: "world/structures/house.mcstructure", data: inner, deflate: true },
+  ]);
+  const parsed = parseStructureFile(zip, "pack.mcworld");
+  assert.equal(parsed.blocks[0].block, "minecraft:stone");
+  assert.equal(parsed.name, "pack.mcworld");
+});
+
+test("压缩包：只有世界存档时提示怎么导出结构", () => {
+  const zip = makeZip([
+    { name: "level.dat", data: Buffer.from([0x0a, 0x00, 0x00, 0x00]) },
+    { name: "db/CURRENT", data: Buffer.from("MANIFEST-000001") },
+  ]);
+  assert.throws(() => parseStructureFile(zip, "world.mcworld"), /世界存档/);
+});
+
+test(".mcstructure：gzip 包裹 / 前置自定义头也能识别", () => {
+  const raw = makeStructure({ size: [1, 1, 1], palette: ["minecraft:gold_block"], indices: [0] });
+  assert.equal(parseStructureFile(gzipFixture(raw), "gz").blocks[0].block, "minecraft:gold_block");
+
+  const wrapped = Buffer.concat([Buffer.from([0x4e, 0x45, 0x54, 0x45, 0x41, 0x53, 0x45, 0x01]), raw]);
+  assert.equal(parseStructureFile(wrapped, "wrapped").blocks[0].block, "minecraft:gold_block");
+});
+
+test("网页/登录页被当成结构上传时，错误里说清楚是 HTML", () => {
+  const html = Buffer.from("<!DOCTYPE html><html><body>login</body></html>", "utf8");
+  assert.throws(() => parseStructureFile(html, "download"), /网页（HTML）/);
+});
+
+test(".vt：VQ 加密容器解码（方块/尺寸/元数据提示）", () => {
+  const buf = readFileSync(new URL("./fixtures/draw.vt", import.meta.url));
+  const parsed = parseStructureFile(buf, "draw");
+  assert.deepEqual(parsed.size, { x: 11, y: 12, z: 41 });
+  assert.equal(parsed.total, 899);
+  assert.equal(parsed.commandBlocks?.length, 162);
+  assert.ok(parsed.commandBlocks?.some((cb) => cb.command.includes("tag @p")), JSON.stringify(parsed.commandBlocks?.[0]));
+  assert.ok(parsed.commandBlocks?.every((cb) => cb.x >= 0 && cb.y >= 0 && cb.z >= 0));
+  assert.ok(parsed.issues?.some((i) => /告示牌/.test(i)), JSON.stringify(parsed.issues));
 });

@@ -17,16 +17,39 @@
  * 目前不转换：Java 与基岩版的状态名不同（facing vs weirdo_direction 等），
  * 猜测映射会比丢掉更糟，所以只保留方块名。
  */
+import * as zlib from "node:zlib";
 import { parseNbt } from "./nbt";
 import { parseJavaNbt } from "./java-nbt";
 import { parseMcStructure, ParsedStructure, StructureBlock } from "./structure";
+import { finishParsedStructure, isAir } from "./parsed-structure";
+import { isBdx, parseBdxFile } from "./bdx";
+import { isVt, parseVtFile } from "./vt";
+import { extractZipEntry, isZip, readZipEntries } from "./zip";
 
-const AIR = new Set([
-  "minecraft:air",
-  "minecraft:cave_air",
-  "minecraft:void_air",
-  "minecraft:structure_void",
-]);
+/** 结构文件扩展名（导入面板、服务端、归档包内部识别共用一份） */
+export const STRUCTURE_EXTENSIONS = [
+  "mcstructure",
+  "litematic",
+  "schem",
+  "schematic",
+  "nbt",
+  "bdx",
+  "vt",
+  "mcworld",
+  "zip",
+] as const;
+
+const STRUCTURE_EXT_RE = new RegExp(`\\.(${STRUCTURE_EXTENSIONS.join("|")})$`, "i");
+
+/** 文件名是否带可识别的结构扩展名 */
+export function hasStructureExtension(name: string): boolean {
+  return STRUCTURE_EXT_RE.test(name);
+}
+
+/** 去掉结构扩展名（保留其余部分作为结构名） */
+export function stripStructureExtension(name: string): string {
+  return name.replace(STRUCTURE_EXT_RE, "");
+}
 
 /** 经典 .schematic 数字 ID → 方块名（常见方块子集） */
 const LEGACY_IDS: Record<number, string> = {
@@ -272,10 +295,6 @@ const LEGACY_IDS: Record<number, string> = {
   252: "minecraft:white_concrete_powder",
 };
 
-function isAir(name: string): boolean {
-  return AIR.has(name);
-}
-
 /** 16 种染色变体的顺序（羊毛 / 染色玻璃 / 陶瓦 / 混凝土…的 Data 值） */
 const DYE_COLORS = [
   "white",
@@ -501,41 +520,8 @@ function createNameMapper(): NameMapper {
   };
 }
 
-/** 统一收尾：把坐标平移到最小角、排序（x→y→z）、生成 ParsedStructure */
-function finish(
-  name: string,
-  raw: StructureBlock[],
-  paletteSize: number,
-  skippedAir: number,
-  issues: string[] = []
-): ParsedStructure {
-  if (!raw.length) throw new Error("文件里没有可放置的方块（可能全是空气）");
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (const b of raw) {
-    if (b.x < minX) minX = b.x;
-    if (b.y < minY) minY = b.y;
-    if (b.z < minZ) minZ = b.z;
-    if (b.x > maxX) maxX = b.x;
-    if (b.y > maxY) maxY = b.y;
-    if (b.z > maxZ) maxZ = b.z;
-  }
-  const size = { x: maxX - minX + 1, y: maxY - minY + 1, z: maxZ - minZ + 1 };
-  const blocks = raw.map((b) => ({ x: b.x - minX, y: b.y - minY, z: b.z - minZ, block: b.block }));
-  blocks.sort((a, b) => a.x - b.x || a.y - b.y || a.z - b.z);
-  if (issues.length) console.warn(`[formats] ${name}: ${issues.join("；")}`);
-  const parsed: ParsedStructure = {
-    name,
-    size,
-    blocks,
-    total: blocks.length,
-    paletteSize: Math.max(1, paletteSize),
-    skippedAir,
-    materials: [...new Set(blocks.map((b) => b.block))].slice(0, 40),
-  };
-  if (issues.length) parsed.issues = issues;
-  return parsed;
-}
+/** 统一收尾（实现见 parsed-structure.ts，formats 与 BDX 共用） */
+const finish = finishParsedStructure;
 
 /** ===== Litematica ===== */
 /** 连续位流解包（Litematica 的 BlockStates 是 64 位打包，位宽可以跨 long 边界） */
@@ -858,29 +844,168 @@ export function isGzip(buf: Buffer): boolean {
   return buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
 }
 
+/** 文件头十六进制，报错时给用户看，比「格式错误」有用 */
+function magicHex(buf: Buffer, n = 8): string {
+  return [...buf.subarray(0, Math.min(n, buf.length))]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join(" ");
+}
+
+function gunzip(buf: Buffer): Buffer {
+  try {
+    return zlib.gunzipSync(buf, { maxOutputLength: 512 << 20 });
+  } catch (e: any) {
+    throw new Error(`gzip 解压失败：${e?.message ?? e}`);
+  }
+}
+
 /**
- * 统一解析入口：自动识别 .mcstructure（Bedrock LE）与各类 Java 投影文件。
+ * 找 .mcstructure 的 NBT 起点。
+ *
+ * 正规文件从 0 开始（TAG_Compound + 空名字 = 0a 00 00）；但部分第三方工具/
+ * 网易导出会在前面塞几字节自定义头，于是「根标签不是 Compound」。这里在前
+ * 64KB 里扫有限的候选偏移，能解析出 size + structure 才算数。
+ */
+function findMcStructureOffset(buf: Buffer): number | undefined {
+  const tryAt = (offset: number): boolean => {
+    try {
+      const root = parseNbt(offset ? buf.subarray(offset) : buf);
+      return !!root && typeof root === "object" && !!root.structure && Array.isArray(root.size);
+    } catch {
+      return false;
+    }
+  };
+  if (tryAt(0)) return 0;
+  const limit = Math.min(buf.length - 3, 65536);
+  let tried = 0;
+  for (let i = 1; i <= limit && tried < 64; i++) {
+    if (buf[i] !== 0x0a) continue;
+    // TAG_Compound 后面跟 2 字节名字长度：名字要么为空，要么是可读 ASCII
+    const nameLen = buf.readUInt16LE(i + 1);
+    if (nameLen > 1024 || i + 3 + nameLen > buf.length) continue;
+    let printable = true;
+    for (let k = 0; k < nameLen; k++) {
+      const c = buf[i + 3 + k];
+      if (c !== 0 && (c < 0x20 || c > 0x7e)) {
+        printable = false;
+        break;
+      }
+    }
+    if (!printable) continue;
+    tried++;
+    if (tryAt(i)) return i;
+  }
+  return undefined;
+}
+
+/** 压缩包里的结构文件优先级（同优先级按体积从大到小） */
+function zipEntryPriority(name: string): number {
+  if (/\.mcstructure$/i.test(name)) return 5;
+  if (/\.bdx$/i.test(name)) return 4;
+  if (/\.vt$/i.test(name)) return 3.5;
+  if (/\.litematic$/i.test(name)) return 3;
+  if (/\.(schem|schematic)$/i.test(name)) return 2;
+  if (/\.nbt$/i.test(name)) return 1;
+  return 0;
+}
+
+const ZIP_STRUCTURE_RE = /\.(mcstructure|litematic|schem|schematic|nbt|bdx|vt)$/i;
+
+/** .mcworld / .zip：从压缩包里挑一个结构文件解析 */
+function parseZipArchive(buf: Buffer, name: string, depth: number): ParsedStructure {
+  const entries = readZipEntries(buf);
+  const candidates = entries
+    .filter((e) => !e.name.endsWith("/") && ZIP_STRUCTURE_RE.test(e.name))
+    .sort((a, b) => zipEntryPriority(b.name) - zipEntryPriority(a.name) || b.uncompressedSize - a.uncompressedSize);
+
+  if (!candidates.length) {
+    const hasWorld =
+      entries.some((e) => /(^|\/)level\.dat$/i.test(e.name)) &&
+      entries.some((e) => /(^|\/)db\//i.test(e.name));
+    if (hasWorld) {
+      throw new Error(
+        "这是基岩版世界存档（.mcworld）：压缩包里是 level.dat + db/ 区块数据，本身不是结构文件。" +
+          "请在游戏里用结构方块导出 .mcstructure，或把 .schem / .bdx 等投影文件单独上传（也可以打进 zip）"
+      );
+    }
+    throw new Error(
+      "压缩包里没有可导入的结构文件（支持 .mcstructure / .litematic / .schem / .schematic / .nbt / .bdx）"
+    );
+  }
+
+  const errors: string[] = [];
+  for (const entry of candidates.slice(0, 12)) {
+    const base = entry.name.split("/").pop() ?? "structure";
+    const innerName = stripStructureExtension(base).slice(0, 80) || "structure";
+    try {
+      const data = extractZipEntry(buf, entry);
+      const parsed = parseStructureBuffer(data, innerName, depth + 1);
+      if (candidates.length > 1) {
+        parsed.issues = [
+          ...(parsed.issues ?? []),
+          `压缩包里有 ${candidates.length} 个结构文件，已导入「${entry.name}」`,
+        ];
+      }
+      parsed.name = name;
+      return parsed;
+    } catch (e: any) {
+      errors.push(`${entry.name}：${e?.message ?? e}`);
+    }
+  }
+  throw new Error(`压缩包里的结构都解析失败：${errors.slice(0, 3).join("；")}`);
+}
+
+/** 解析核心（支持解压后再识别，最多嵌套 3 层） */
+function parseStructureBuffer(buf: Buffer, name: string, depth: number): ParsedStructure {
+  if (!buf.length) throw new Error("文件为空");
+  if (depth > 3) throw new Error("压缩包嵌套层数过多");
+
+  if (isBdx(buf)) return parseBdxFile(buf, name);
+  if (isVt(buf)) return parseVtFile(buf, name);
+  if (isZip(buf)) return parseZipArchive(buf, name, depth);
+
+  let data = buf;
+  if (isGzip(buf)) {
+    data = gunzip(buf);
+    if (isBdx(data)) return parseBdxFile(data, name);
+    if (isZip(data)) return parseZipArchive(data, name, depth);
+  }
+
+  // 1) Bedrock .mcstructure（LE NBT，可能带前置头）
+  const offset = findMcStructureOffset(data);
+  if (offset !== undefined) return parseMcStructure(offset ? data.subarray(offset) : data, name);
+
+  // 2) Java 大端 NBT（未压缩的 .nbt / .schem / .litematic）
+  let root: any;
+  try {
+    root = parseJavaNbt(data);
+  } catch (e: any) {
+    throw new Error(`${describeUnknownFormat(data)}（文件头 ${magicHex(data)}）`);
+  }
+  try {
+    return fromJavaRoot(root, name);
+  } catch (e: any) {
+    // NBT 本身是合法的，只是不是已知投影：把 fromJavaRoot 的具体原因带出去
+    throw new Error(`无法识别的投影文件格式：${e?.message ?? e}`);
+  }
+}
+
+/** 针对常见「看起来像结构其实不是」的文件给出明确提示 */
+function describeUnknownFormat(buf: Buffer): string {
+  const head = buf.toString("latin1", 0, Math.min(buf.length, 256)).trimStart().toLowerCase();
+  if (head.startsWith("<!doctype html") || head.startsWith("<html")) {
+    return "这是网页（HTML），不是结构文件：多半是下载链接返回了登录页/错误页";
+  }
+  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+    return "gzip 数据解压后仍不是可识别的结构文件";
+  }
+  return "无法识别文件格式（支持 .mcstructure / .bdx / .litematic / .schem / .schematic / .nbt，以及内含这些文件的 .mcworld/.zip）";
+}
+
+/**
+ * 统一解析入口：自动识别 .mcstructure（Bedrock）、.bdx（PhoenixBuilder）、
+ * 各类 Java 投影文件，以及 .mcworld/.zip 压缩包里的结构文件。
  */
 export function parseStructureFile(buf: Buffer, name: string): ParsedStructure {
-  if (!buf.length) throw new Error("文件为空");
-
-  // Java 版投影文件基本都是 gzip
-  if (isGzip(buf)) {
-    return fromJavaRoot(parseJavaNbt(buf), name);
-  }
-
-  // 先试 Bedrock .mcstructure（LE，未压缩）
-  try {
-    const root = parseNbt(buf);
-    if (root && root.structure && Array.isArray(root.size)) {
-      return parseMcStructure(buf, name);
-    }
-  } catch {}
-
-  // 再试 Java 大端 NBT（未压缩的 .nbt / .litematic）
-  try {
-    return fromJavaRoot(parseJavaNbt(buf), name);
-  } catch (e: any) {
-    throw new Error(`无法识别文件格式：${e?.message ?? e}`);
-  }
+  return parseStructureBuffer(buf, name, 0);
 }

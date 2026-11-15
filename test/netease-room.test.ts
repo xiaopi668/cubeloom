@@ -15,6 +15,7 @@ import {
   joinRealmsByCode,
   listRealms,
   parseLocalEndpoint,
+  resolvePeLocalRoom,
   resetPeVersionCache,
   resolveLobbyRoom,
   resolveRealmsAddress,
@@ -182,7 +183,16 @@ test("联机大厅：搜索字段与签名，进房→取地址→退房的顺�
   resetPeVersionCache();
   const list = await searchLobbyRooms("生存", CRED, { fetchImpl: fakeFetch });
   assert.deepEqual(list, [
-    { entityId: "888", name: "生存大厅", hasPwd: true, playerCount: 2, maxCount: 10, version: "1.21.120", lobbyManifestVersion: "mv1" },
+    {
+      entityId: "888",
+      name: "生存大厅",
+      hasPwd: true,
+      playerCount: 2,
+      maxCount: 10,
+      version: "1.21.120",
+      lobbyManifestVersion: "mv1",
+      resId: "",
+    },
   ]);
   const searchCall = calls.find((c) => c.url.endsWith("/online-lobby-room/query/search-by-name"))!;
   assert.equal(searchCall.url, "https://g79mclobt.minecraft.cn/online-lobby-room/query/search-by-name");
@@ -240,4 +250,114 @@ test("山头服：列表 / 邀请码 / sid 地址", async () => {
   const addr = await resolveRealmsAddress("sid1", CRED, { fetchImpl: fakeFetch });
   assert.deepEqual(addr, { host: "1.2.3.4", port: "19132" });
   assert.equal(calls[2].body, '{"sid":"sid1"}');
+});
+
+test("联机大厅：带 mod 的房间上报 res_id，组件未获得时给出可操作提示", async () => {
+  const calls: Array<{ url: string; body: string }> = [];
+  const fakeFetch = (async (url: string, init: any) => {
+    calls.push({ url, body: init.body });
+    if (url.includes("/status/MCVersion.json")) {
+      return new Response(JSON.stringify({ pe: "1.21.130" }), { status: 200 });
+    }
+    if (url.endsWith("/online-lobby-room/query/search-by-name")) {
+      return new Response(
+        JSON.stringify({
+          code: 0,
+          entities: [
+            {
+              entity_id: "999",
+              room_name: "模组生存",
+              password: 0,
+              member_uids: ["a"],
+              max_count: 10,
+              version: "1.21.120",
+              lobby_manifest_version: "mv2",
+              res_id: "mod-1",
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    }
+    if (url.endsWith("/online-lobby-room-enter")) {
+      return new Response(JSON.stringify({ code: 1001, message: "物品还未获得" }), { status: 200 });
+    }
+    return new Response("{}", { status: 404 });
+  }) as unknown as typeof fetch;
+
+  resetPeVersionCache();
+  const list = await searchLobbyRooms("模组", CRED, { fetchImpl: fakeFetch });
+  assert.equal(list[0].resId, "mod-1");
+
+  await assert.rejects(
+    () => resolveLobbyRoom("999", "", CRED, { fetchImpl: fakeFetch }),
+    /带模组（组件）.*还没有获得/
+  );
+  const enter = calls.find((c) => c.url.endsWith("/online-lobby-room-enter"))!;
+  assert.deepEqual(JSON.parse(enter.body), {
+    room_id: "999",
+    password: "",
+    lobby_manifest_version: "mv2",
+    check_visibilily: true,
+    res_id: "mod-1",
+  });
+});
+
+
+test("本地联机：房间号直接进房，501 自动领取组件后重试", async () => {
+  const calls: Array<{ url: string; body: string }> = [];
+  let enterCalls = 0;
+  const fakeFetch = (async (url: string, init: any) => {
+    calls.push({ url, body: init.body });
+    if (url.includes("/status/MCVersion.json")) {
+      return new Response(JSON.stringify({ pe: "1.21.130" }), { status: 200 });
+    }
+    if (url.endsWith("/online-lobby-room-enter")) {
+      enterCalls++;
+      return new Response(
+        JSON.stringify(enterCalls === 1 ? { code: 501, message: "物品还未获得" } : { code: 0 }),
+        { status: 200 }
+      );
+    }
+    if (url.endsWith("/pe-purchase-item/")) return new Response(JSON.stringify({ code: 0 }), { status: 200 });
+    if (url.endsWith("/online-lobby-game-enter")) {
+      return new Response(JSON.stringify({ code: 0, entity: { server_host: "10.0.0.8", server_port: 19132 } }), {
+        status: 200,
+      });
+    }
+    if (url.endsWith("/leave-room")) return new Response(JSON.stringify({ code: 0 }), { status: 200 });
+    return new Response("{}", { status: 404 });
+  }) as unknown as typeof fetch;
+
+  const address = await resolvePeLocalRoom("660238", "pw", CRED, { fetchImpl: fakeFetch });
+  assert.deepEqual(address, { host: "10.0.0.8", port: "19132" });
+  assert.equal(enterCalls, 2);
+
+  const enter = calls.find((c) => c.url.endsWith("/online-lobby-room-enter"))!;
+  assert.deepEqual(JSON.parse(enter.body), {
+    room_id: "660238",
+    password: "pw",
+    lobby_manifest_version: "",
+    check_visibilily: true,
+  });
+  const purchase = calls.find((c) => c.url.endsWith("/pe-purchase-item/"))!;
+  assert.match(purchase.url, /g79mclobt\.minecraft\.cn/);
+  assert.equal(JSON.parse(purchase.body).item_id, "660238");
+  const game = calls.find((c) => c.url.endsWith("/online-lobby-game-enter"))!;
+  assert.match(game.url, /g79apigatewayobt\.minecraft\.cn/);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(calls.some((c) => c.url.endsWith("/leave-room")), "拿到地址后应释放房间席位");
+});
+
+test("本地联机：非 501 的进房失败带出网易原始 code/message", async () => {
+  const fakeFetch = (async (url: string) => {
+    if (url.includes("/status/MCVersion.json")) {
+      return new Response(JSON.stringify({ pe: "1.21.130" }), { status: 200 });
+    }
+    if (url.endsWith("/online-lobby-room-enter")) {
+      return new Response(JSON.stringify({ code: 404, message: "房间不存在" }), { status: 200 });
+    }
+    return new Response("{}", { status: 404 });
+  }) as unknown as typeof fetch;
+  await assert.rejects(() => resolvePeLocalRoom("660238", "", CRED, { fetchImpl: fakeFetch }), /房间不存在/);
 });

@@ -112,12 +112,12 @@
                   <section class="panel">
       <h2>导入结构 / 投影文件</h2>
       <div class="setting-row">
-        <input id="structure-file" type="file" accept=".mcstructure,.litematic,.schem,.schematic,.nbt" />
+        <input id="structure-file" type="file" accept=".mcstructure,.litematic,.schem,.schematic,.nbt,.bdx,.vt,.mcworld,.zip" />
         <button class="btn small" id="btn-structure-prepare">上传并解析</button>
         <button class="btn small" id="btn-structure-clear">移除</button>
         <button class="btn small" id="btn-structure-repair">修补文件</button>
       </div>
-      <div class="log-info" style="margin-top:8px; white-space:normal">支持 .mcstructure / .litematic / .schem / .schematic / .nbt（投影文件会忽略方块状态）</div>
+      <div class="log-info" style="margin-top:8px; white-space:normal">支持 .mcstructure / .bdx / .vt / .litematic / .schem / .schematic / .nbt；.mcworld / .zip 自动取包内结构文件（投影文件会忽略方块状态）</div>
 <div class="log-info" id="structure-info" style="margin-top:8px; white-space:normal">未选择文件</div>
       <div class="log-info" id="structure-repair-report" style="margin-top:6px; white-space:pre-wrap; display:none"></div>
       <div style="margin-top:8px"><button class="btn small" id="btn-structure-download" style="display:none">下载修补后的文件</button></div>
@@ -341,10 +341,13 @@
 
       <div id="nte-local-group" style="display:none">
         <div class="sl-form" style="margin-top:8px">
-          <input id="nte-local-host" type="text" placeholder="主机 IP（如 192.168.1.5）" />
-          <input id="nte-local-port" type="number" placeholder="端口（默认 19132）" />
+          <input id="nte-local-room" type="text" placeholder="本地联机房间号（4–8 位）" />
+          <input id="nte-local-pass" type="password" placeholder="房间密码（没有就留空）" />
         </div>
-        <div class="log-info" style="margin-top:8px">本地联机不需要网易账号，引擎会用本地会话直连。</div>
+        <div class="log-info" style="margin-top:8px">
+          本地联机填房间号即可（不是 IP）：按房间号直接进房，再取服务器地址启动机器人。
+          带模组（组件）的房间会自动领取组件后重试。
+        </div>
       </div>
 
       <div class="sl-row" style="margin-top:8px">
@@ -395,7 +398,7 @@
         <div class="box"><div class="k">在线玩家</div><div class="v" id="nte-players">—</div></div>
       </div>
       <div class="setting-row" style="margin-top:10px">
-        <input id="nte-file" type="file" accept=".mcstructure,.litematic,.schem,.schematic,.nbt" />
+        <input id="nte-file" type="file" accept=".mcstructure,.litematic,.schem,.schematic,.nbt,.bdx,.vt,.mcworld,.zip" />
         <button class="btn small" id="btn-nte-prepare">上传并解析</button>
         <button class="btn small accent" id="btn-nte-build">在网易服里导入</button>
         <button class="btn small" id="btn-nte-cancel">取消</button>
@@ -810,7 +813,7 @@
     const input = document.getElementById("nte-file");
     const file = input.files && input.files[0];
     if (!file) {
-      $("nte-info").textContent = "请先选择 .mcstructure 文件";
+      $("nte-info").textContent = "请先选择结构文件";
       return;
     }
     $("nte-info").textContent = `正在上传解析 ${file.name}…`;
@@ -821,7 +824,8 @@
         $("nte-info").textContent = "解析失败：" + r.error;
         return;
       }
-      $("nte-info").textContent = `已解析：${r.structure.name} · ${r.structure.size.x}×${r.structure.size.y}×${r.structure.size.z} · ${r.structure.total} 方块`;
+      const issues = Array.isArray(r.structure.issues) && r.structure.issues.length ? ` · 提示：${r.structure.issues.join("；")}` : "";
+      $("nte-info").textContent = `已解析：${r.structure.name} · ${r.structure.size.x}×${r.structure.size.y}×${r.structure.size.z} · ${r.structure.total} 方块${issues}`;
       addEntry("网易版解析结构", r);
     } catch (e) {
       $("nte-info").textContent = "解析失败：" + (e && e.message ? e.message : e);
@@ -977,8 +981,8 @@
       room: $("nte-room").value.trim(),
       roomPassword: $("nte-room-pass").value,
       roomKind: $("nte-room-kind").value,
-      localHost: $("nte-local-host").value.trim(),
-      localPort: $("nte-local-port").value.trim(),
+      localRoom: $("nte-local-room").value.trim(),
+      localPassword: $("nte-local-pass").value,
       displayName: $("nte-display").value.trim(),
       engineVersion: $("nte-engine-ver").value.trim(),
       patchVersion: $("nte-patch-ver").value.trim(),
@@ -1007,8 +1011,8 @@
     $("nte-room").value = c.room || "";
     $("nte-room-pass").value = c.roomPassword || "";
     $("nte-room-kind").value = ["lobby", "realms", "local"].includes(c.roomKind) ? c.roomKind : "rental";
-    $("nte-local-host").value = c.localHost || "";
-    $("nte-local-port").value = c.localPort || "";
+    $("nte-local-room").value = c.localRoom || "";
+    $("nte-local-pass").value = c.localPassword || "";
     $("nte-display").value = c.displayName || "";
     nteUpdateRoomKind();
     $("nte-engine-ver").value = c.engineVersion || "";
@@ -1075,8 +1079,8 @@
       body.mode = $("nte-use-cfg").checked ? "cfg" : "account";
       body.roomKind = kind;
       if (kind === "local") {
-        body.localHost = $("nte-local-host").value.trim();
-        body.localPort = $("nte-local-port").value.trim();
+        body.localRoom = $("nte-local-room").value.trim();
+        body.localPassword = $("nte-local-pass").value;
       } else if (kind === "realms") {
         body.keyword = $("nte-realms-sid").value.trim();
       } else {
@@ -1345,7 +1349,7 @@
   $("nte-svc-start").onclick = () => nteServiceAction("start");
   $("nte-svc-stop").onclick = () => nteServiceAction("stop");
   $("nte-svc-restart").onclick = () => nteServiceAction("restart");
-  for (const id of ["nte-acct", "nte-room", "nte-room-pass", "nte-room-kind", "nte-display", "nte-engine-ver", "nte-patch-ver", "nte-protocol", "nte-lobby-version"]) {
+  for (const id of ["nte-acct", "nte-room", "nte-room-pass", "nte-room-kind", "nte-local-room", "nte-local-pass", "nte-display", "nte-engine-ver", "nte-patch-ver", "nte-protocol", "nte-lobby-version"]) {
     $(id).addEventListener("change", () => nteSaveAccount({}));
   }
   document.getElementById("nte-cfg-file").onchange = (ev) => {
@@ -1456,13 +1460,14 @@
       return;
     }
     const when = info.uploadedAt ? ` · 上传于 ${fmtClock(info.uploadedAt)}` : "";
-    el.textContent = `${info.name} · 尺寸 ${fmtSize(info.size)} · ${info.total} 方块 · 调色板 ${info.paletteSize} 种${when}`;
+    const issues = Array.isArray(info.issues) && info.issues.length ? ` · 提示：${info.issues.join("；")}` : "";
+    el.textContent = `${info.name} · 尺寸 ${fmtSize(info.size)} · ${info.total} 方块 · 调色板 ${info.paletteSize} 种${when}${issues}`;
   }
   async function prepareStructure() {
     const input = document.getElementById("structure-file");
     const file = input.files && input.files[0];
     if (!file) {
-      document.getElementById("structure-info").textContent = "请先选择 .mcstructure 文件";
+      document.getElementById("structure-info").textContent = "请先选择结构文件";
       return;
     }
     if (file.size > 64 * 1024 * 1024) {
@@ -1498,7 +1503,7 @@
     const downloadBtn = document.getElementById("btn-structure-download");
     if (!file) {
       reportEl.style.display = "block";
-      reportEl.textContent = "请先选择 .mcstructure 文件";
+      reportEl.textContent = "请先选择结构文件";
       return;
     }
     if (file.size > 64 * 1024 * 1024) {

@@ -2,7 +2,7 @@ import { WSServer, Version } from "mcpews";
 import { WebSocketServer as JWS } from "ws";
 import Session, { LOCAL_TOKEN } from "./src/session";
 import { parseMcStructure, structureCommands, ParsedStructure } from "./src/structure";
-import { parseStructureFile } from "./src/formats";
+import { parseStructureFile, stripStructureExtension, hasStructureExtension } from "./src/formats";
 import { repairMcStructure } from "./src/structure-repair";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { InFlightTracker, waitForIdle } from "./src/sender";
@@ -1419,9 +1419,10 @@ const control = createServer(async (req, res) => {
     if (req.method === "POST" && pathname === "/structure/prepare") {
       const body = await readJson(req, 64 << 20);
       const rawFile = String(body.name ?? "structure");
-      const extMatch = rawFile.match(/\.(mcstructure|litematic|schem|schematic|nbt)$/i);
-      pendingFormat = extMatch ? `.${extMatch[1].toLowerCase()}` : ".mcstructure";
-      const rawName = rawFile.replace(/\.(mcstructure|litematic|schem|schematic|nbt)$/i, "").trim();
+      pendingFormat = hasStructureExtension(rawFile)
+        ? `.${rawFile.slice(rawFile.lastIndexOf(".") + 1).toLowerCase()}`
+        : ".mcstructure";
+      const rawName = stripStructureExtension(rawFile).trim();
       const name = (rawName || "structure").slice(0, 80);
       const data = String(body.data ?? "");
       if (!data) return json(res, 400, { ok: false, error: "缺少文件数据" });
@@ -1454,6 +1455,7 @@ const control = createServer(async (req, res) => {
             paletteSize: st.paletteSize,
             skippedAir: st.skippedAir,
             materials: st.materials,
+            issues: st.issues ?? [],
             bytes: buf.length,
           },
         });

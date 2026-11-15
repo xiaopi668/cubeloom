@@ -445,3 +445,90 @@ export function makeSchematic(opts: {
   }
   return serializeJavaNbt({ type: "compound", fields });
 }
+
+/* ── BDX（PhoenixBuilder 建筑文件） ── */
+
+/** 用操作流拼一个 BDX：BD@ + brotli(BDX\0 作者\0 操作… 终止符) */
+export function makeBdx(ops: Buffer[], author = "cubeloom-test"): Buffer {
+  const body = Buffer.concat([
+    Buffer.from("BDX\x00", "latin1"),
+    Buffer.from(author, "utf8"),
+    Buffer.from([0]),
+    ...ops,
+    Buffer.from([0x58]), // 终止符
+  ]);
+  return Buffer.concat([Buffer.from("BD@", "latin1"), zlib.brotliCompressSync(body)]);
+}
+
+/** BDX 操作码 + 负载 */
+export function bdxOp(id: number, payload?: Buffer): Buffer {
+  return Buffer.concat([Buffer.from([id]), payload ?? Buffer.alloc(0)]);
+}
+
+export function bdxU16(v: number): Buffer {
+  const b = Buffer.alloc(2);
+  b.writeUInt16BE(v & 0xffff);
+  return b;
+}
+
+export function bdxCString(s: string): Buffer {
+  return Buffer.concat([Buffer.from(s, "utf8"), Buffer.from([0])]);
+}
+
+/* ── 极简 ZIP（store/deflate，用于 .mcworld/.zip 测试） ── */
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i];
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+export function makeZip(files: Array<{ name: string; data: Buffer; deflate?: boolean }>): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const file of files) {
+    const name = Buffer.from(file.name, "utf8");
+    const raw = file.data;
+    const body = file.deflate ? zlib.deflateRawSync(raw) : raw;
+    const method = file.deflate ? 8 : 0;
+    const crc = crc32(raw);
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6); // UTF-8 文件名
+    local.writeUInt16LE(method, 8);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(raw.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    locals.push(local, name, body);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(method, 10);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(body.length, 20);
+    central.writeUInt32LE(raw.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    centrals.push(central, name);
+
+    offset += 30 + name.length + body.length;
+  }
+  const cd = Buffer.concat(centrals);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(files.length, 8);
+  eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(cd.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, cd, eocd]);
+}

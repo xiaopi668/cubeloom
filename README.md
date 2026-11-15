@@ -27,7 +27,7 @@ npm run cli                # 终端交互版
 
 | 能力 | 说明 |
 |---|---|
-| **结构导入** | `.mcstructure` / `.litematic` / `.schem` / `.schematic` / `.nbt` → 方块；带回读校验与自动补建 |
+| **结构导入** | `.mcstructure` / `.bdx` / `.vt` / `.litematic` / `.schem` / `.schematic` / `.nbt` → 方块；`.mcworld` / `.zip` 自动取包内结构；带回读校验与自动补建 |
 | **体素几何** | 聊天栏发 `-<代码>` 执行 JavaScript，用 `sphere` / `circle` / `torus` / `lsystem` / 参数方程 / 海龟绘图直接生成建筑 |
 | **音乐盒** | MIDI 文件 → 游戏内 `note.*` 音符盒音色播放，支持鼓通道与变速 |
 | **像素画 / 像素字** | 上传图片或输入文本 → 方块画 |
@@ -226,7 +226,8 @@ npm run admin                 # 2. 打开面板 →「网易版」页
 | 租赁服 | 房间号 / 房间名（可搜索），有密码填密码 | `RentalGame` + `/rental-server-*` |
 | 联机大厅 | 房间号 / 房间名（可搜索），有密码填密码 | `LobbyGame` + `/online-lobby-*` |
 | 山头服 | 点「刷新山头服列表」选一个，或填 sid；邀请码可先加入 | `DomainGame` + `/domain-server-*` |
-| 本地联机 | 主机 IP + 端口（默认 19132），**不需要登录** | `LocalGame`，引擎走本地会话直连 |
+| 本地联机 | **4–8 位房间号**（可带房间密码） | 直接 `/online-lobby-room-enter`；组件未获得时自动领取后重试 → `/online-lobby-game-enter` |
+> 本地联机房间不会出现在「联机大厅」的搜索结果里，但可以按房间号**直接进房**（VQ 客户端也是这么做的）。带模组（组件）的房间如果返回 `501 / 物品未获得`，Cubeloom 会自动调 `/pe-purchase-item/` 领取组件再重试一次；领取失败才会报错。
 
 3. 点 **「启动机器人 + 网易服务」**。
 
@@ -297,7 +298,7 @@ pid / 重启次数 / 最后错误。细节见 [packaging/netease-bot/README.md](
 
 ### 使用
 
-选 `.mcstructure` → 上传解析 → 「在网易服里导入」，自动跑三步：
+选结构文件（`.mcstructure` / `.bdx` / `.vt` / `.schem` / `.litematic` / `.nbt`，或含这些文件的 `.mcworld` / `.zip`）→ 上传解析 → 「在网易服里导入」，自动跑三步：
 
 1. **放置**：按 `FB_NETEASE_RATE`（默认 5 条/秒）限速下发 `setblock` / `fill`
 2. **校验**：对表面抽样点发**幂等 setblock**（已经是目标方块算通过，缺的直接补上）
@@ -309,7 +310,7 @@ pid / 重启次数 / 最后错误。细节见 [packaging/netease-bot/README.md](
 - **指令必须限速**：突发大量指令会被判「违规游戏行为」（reason=55）踢线；默认 5 条/秒，可用 `FB_NETEASE_RATE` 调，越低越稳
 - 被踢后约 60 秒自动重连，重连后事件桥自动恢复
 - 64×64×64（约 26 万方块）按 5 条/秒要跑约 15 分钟；**先用小结构确认原点和朝向**
-- 和 WS 版一样只还原方块 ID，不还原方块状态（朝向/半砖/告示牌文字）
+- `.mcstructure` / `.bdx` / `.vt` 会带方块状态（朝向/颜色/半砖）；`.vt` 的命令方块内容会通过 `command_update` 补写，告示牌文字暂未还原；Java 投影文件（`.schem` 等）只还原方块 ID
 - 网易版服务和 WS 版互不影响，可以同时跑（11454 / 11451 两个端口）
 
 ### 账号登录常见问题

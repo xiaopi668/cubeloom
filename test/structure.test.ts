@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseMcStructure, structureCommands } from "../src/structure";
+import { needsIndividualPlacement, parseMcStructure, structureCommands } from "../src/structure";
 import { makeStructure } from "./helpers";
 
 /** 把 fill / setblock 命令还原成方块坐标集合，用于校验覆盖范围 */
@@ -146,4 +146,52 @@ test("空气与 structure_void 不计入方块", () => {
   const parsed = parseMcStructure(buf, "air");
   assert.equal(parsed.total, 0);
   assert.equal(parsed.skippedAir, 2);
+});
+
+test("重力/附着方块不进 fill：实心块先放，特殊块最后逐块 setblock", () => {
+  const blocks = [
+    { x: 0, y: 0, z: 0, block: "minecraft:stone" },
+    { x: 0, y: 1, z: 0, block: "minecraft:stone" },
+    { x: 0, y: 2, z: 0, block: "minecraft:sand" },
+    { x: 1, y: 0, z: 0, block: "minecraft:torch" },
+  ];
+  const cmds = structureCommands(st(blocks), { x: 0, y: 0, z: 0 }, 0);
+  // 石头先合成一条 fill
+  assert.equal(cmds[0].command, "fill 0 0 0 0 1 0 minecraft:stone");
+  const fills = cmds.filter((c) => c.command.startsWith("fill"));
+  assert.ok(!fills.some((c) => c.command.includes("sand") || c.command.includes("torch")), "沙子/火把不能进 fill");
+  const specials = cmds.slice(1);
+  assert.equal(specials.length, 2);
+  assert.ok(specials.every((c) => c.command.startsWith("setblock")));
+  // 自下而上：y=0 的火把在 y=2 的沙子前面
+  assert.ok(specials[0].command.includes("minecraft:torch"));
+  assert.ok(specials[1].command.includes("minecraft:sand"));
+});
+
+test("特殊方块判定：重力/附着类要逐块，普通建筑方块不误伤", () => {
+  for (const name of [
+    "minecraft:sand",
+    "minecraft:red_sand",
+    "minecraft:gravel",
+    "minecraft:torch",
+    "minecraft:oak_door",
+    "minecraft:oak_sign",
+    "minecraft:rail",
+    "minecraft:white_carpet",
+    "minecraft:red_concrete_powder",
+    "minecraft:oak_sapling",
+    "minecraft:sand[\"sand_type\"=\"normal\"]",
+  ]) {
+    assert.equal(needsIndividualPlacement(name), true, name);
+  }
+  for (const name of [
+    "minecraft:stone",
+    "minecraft:oak_planks",
+    "minecraft:oak_stairs",
+    "minecraft:glass",
+    "minecraft:white_wool",
+    "minecraft:torchflower_block",
+  ]) {
+    assert.equal(needsIndividualPlacement(name), false, name);
+  }
 });

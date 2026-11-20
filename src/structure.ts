@@ -201,8 +201,13 @@ export function parseMcStructure(buf: Buffer, name: string): ParsedStructure {
   };
 }
 
-/** 单个 fill 的方块数上限（Bedrock /fill 上限 32768） */
-const FILL_LIMIT = 32768;
+/**
+ * 单个 fill 的方块数上限。
+ *
+ * Bedrock 的 /fill 理论上限是 32768，但实际按「包含两端」计数，32768 会越界被拒，
+ * 所以留 2 的余量（星月导入器同样用 32766）。
+ */
+const FILL_LIMIT = 32766;
 
 export type StructureCommandOptions = {
   /**
@@ -212,7 +217,52 @@ export type StructureCommandOptions = {
   maxFillVolume?: number;
 };
 
-type Box = { x1: number; y1: number; z1: number; x2: number; y2: number; z2: number };
+/**
+ * 这些方块不能进 fill / 不能被批量覆盖：
+ *   · 重力方块（沙、砂砾、混凝土粉末…）批量放置时会在半空中下落，落点全错；
+ *   · 附着类（火把、铁轨、藤蔓、作物、告示牌、门…）需要依附面，fill 后状态会掉；
+ *   · 液体/气泡柱等也一样。
+ * 它们的统一处理是：先放完实心块，再逐块 setblock（自下而上）。
+ *
+ * 名单参考《星月导入器 1.0.5》chunk_fill.IsSpecialPlacementBlockName 的分类思路，
+ * 这里按「名字后缀 + 明确枚举」实现，避免把普通建筑方块也逐块发出去。
+ */
+const SPECIAL_BLOCKS = new Set([
+  "sand", "red_sand", "gravel", "suspicious_sand", "suspicious_gravel",
+  "anvil", "chipped_anvil", "damaged_anvil", "dragon_egg", "pointed_dripstone", "scaffolding",
+  "rail", "golden_rail", "detector_rail", "activator_rail",
+  "grass", "tallgrass", "short_grass", "tall_grass", "fern", "large_fern", "dead_bush", "vine",
+  "weeping_vines", "twisting_vines", "cave_vines", "glow_lichen", "hanging_roots", "spore_blossom",
+  "seagrass", "tall_seagrass", "kelp", "kelp_plant", "bamboo", "sugar_cane",
+  "cactus", "lily_pad", "pink_petals", "torchflower", "pitcher_plant",
+  "azalea", "flowering_azalea", "nether_sprouts", "mangrove_propagule",
+  "leaf_litter", "wildflowers", "open_eyeblossom", "closed_eyeblossom",
+  "pale_hanging_moss", "pale_moss_carpet",
+  "wheat", "beetroot", "carrots", "potatoes", "nether_wart", "cocoa",
+  "melon_stem", "pumpkin_stem", "attached_melon_stem", "attached_pumpkin_stem",
+  "torchflower_crop", "pitcher_crop", "chorus_plant", "small_dripleaf", "big_dripleaf",
+  "big_dripleaf_stem",
+  "torch", "redstone_torch", "unlit_redstone_torch", "soul_torch", "underwater_torch",
+  "fire", "soul_fire", "ladder", "lever", "tripwire", "tripwire_hook",
+  "bed", "flower_pot", "candle", "sea_pickle", "turtle_egg", "snow_layer",
+  "end_rod", "chain", "lantern", "soul_lantern", "fence_gate", "amethyst_cluster",
+  "small_amethyst_bud", "medium_amethyst_bud", "large_amethyst_bud",
+]);
+
+const SPECIAL_SUFFIXES = [
+  "_concrete_powder", "_carpet", "_pressure_plate", "_button", "_rail", "_sapling",
+  "_flower", "_bush", "_roots", "_vine", "_fungus", "_mushroom", "_coral",
+  "_coral_fan", "_sign", "_frame", "_door", "_trapdoor", "_torch", "_lantern",
+  "_candle", "_bed", "_banner", "_skull", "_head", "_pot", "_campfire",
+];
+
+/** 方块名是否必须逐块放置（去掉 namespacing 与状态后缀再判断） */
+export function needsIndividualPlacement(block: string): boolean {
+  const bare = String(block || "").split("[")[0].trim().toLowerCase().replace(/^minecraft:/, "");
+  if (!bare) return false;
+  if (SPECIAL_BLOCKS.has(bare)) return true;
+  return SPECIAL_SUFFIXES.some((suffix) => bare.endsWith(suffix));
+}
 
 /**
  * 生成放置命令：按方块做 **3D 贪心合块**，大块区域用一条 fill 命令覆盖。
@@ -242,13 +292,29 @@ export function structureCommands(
   /** 结构内局部坐标 → 唯一数字 key（坐标都在 [0, size) 内） */
   const keyOf = (x: number, y: number, z: number) => (x * sy + y) * sz + z;
 
+  // 逐块放置的特殊方块（重力/附着类）：先收集，等实心块放完再自下而上补
+  const special: StructureBlock[] = [];
   // 按方块字符串分组（同名字同状态才会合并）
   const groups = new Map<string, StructureBlock[]>();
   for (const b of st.blocks) {
+    if (needsIndividualPlacement(b.block)) {
+      special.push(b);
+      continue;
+    }
     let list = groups.get(b.block);
     if (!list) groups.set(b.block, (list = []));
     list.push(b);
   }
+
+  /** 6 种生长顺序：不同形状下「先长哪根轴」差异很大，逐个试、取体积最大的 */
+  const AXIS_ORDERS: Array<[number, number, number]> = [
+    [2, 0, 1],
+    [2, 1, 0],
+    [0, 2, 1],
+    [1, 2, 0],
+    [0, 1, 2],
+    [1, 0, 2],
+  ];
 
   for (const [block, list] of groups) {
     list.sort((a, b) => a.x - b.x || a.y - b.y || a.z - b.z);
@@ -259,46 +325,69 @@ export function structureCommands(
     for (const b of list) {
       if (used.has(keyOf(b.x, b.y, b.z))) continue;
 
-      // 1) 沿 z 拉成一条线
-      let z2 = b.z;
-      while (z2 + 1 < sz && cells.has(keyOf(b.x, b.y, z2 + 1)) && !used.has(keyOf(b.x, b.y, z2 + 1))) z2++;
-
-      // 2) 沿 x 把线扩成平面（每列整条都在才行）
-      let x2 = b.x;
-      for (;;) {
-        const x = x2 + 1;
-        if (x >= sx) break;
-        let ok = true;
-        for (let z = b.z; z <= z2; z++) {
-          const k = keyOf(x, b.y, z);
-          if (!cells.has(k) || used.has(k)) {
-            ok = false;
-            break;
-          }
-        }
-        if (!ok) break;
-        x2 = x;
-      }
-
-      // 3) 沿 y 把平面堆成方块体
-      let y2 = b.y;
-      for (;;) {
-        const y = y2 + 1;
-        if (y >= sy) break;
-        let ok = true;
-        for (let x = b.x; x <= x2 && ok; x++) {
-          for (let z = b.z; z <= z2; z++) {
-            const k = keyOf(x, y, z);
-            if (!cells.has(k) || used.has(k)) {
-              ok = false;
-              break;
+      let best = { x2: b.x, y2: b.y, z2: b.z, volume: 1, dims: 0 };
+      for (const order of AXIS_ORDERS) {
+        let x2 = b.x;
+        let y2 = b.y;
+        let z2 = b.z;
+        for (const axis of order) {
+          for (;;) {
+            if (axis === 0) {
+              const x = x2 + 1;
+              if (x >= sx) break;
+              let ok = true;
+              for (let y = b.y; y <= y2 && ok; y++) {
+                for (let z = b.z; z <= z2; z++) {
+                  const k = keyOf(x, y, z);
+                  if (!cells.has(k) || used.has(k)) {
+                    ok = false;
+                    break;
+                  }
+                }
+              }
+              if (!ok) break;
+              x2 = x;
+            } else if (axis === 1) {
+              const y = y2 + 1;
+              if (y >= sy) break;
+              let ok = true;
+              for (let x = b.x; x <= x2 && ok; x++) {
+                for (let z = b.z; z <= z2; z++) {
+                  const k = keyOf(x, y, z);
+                  if (!cells.has(k) || used.has(k)) {
+                    ok = false;
+                    break;
+                  }
+                }
+              }
+              if (!ok) break;
+              y2 = y;
+            } else {
+              const z = z2 + 1;
+              if (z >= sz) break;
+              let ok = true;
+              for (let x = b.x; x <= x2 && ok; x++) {
+                for (let y = b.y; y <= y2; y++) {
+                  const k = keyOf(x, y, z);
+                  if (!cells.has(k) || used.has(k)) {
+                    ok = false;
+                    break;
+                  }
+                }
+              }
+              if (!ok) break;
+              z2 = z;
             }
           }
         }
-        if (!ok) break;
-        y2 = y;
+        const volume = (x2 - b.x + 1) * (y2 - b.y + 1) * (z2 - b.z + 1);
+        const dims = (x2 > b.x ? 1 : 0) + (y2 > b.y ? 1 : 0) + (z2 > b.z ? 1 : 0);
+        if (volume > best.volume || (volume === best.volume && dims > best.dims)) {
+          best = { x2, y2, z2, volume, dims };
+        }
       }
 
+      const { x2, y2, z2 } = best;
       for (let x = b.x; x <= x2; x++) {
         for (let y = b.y; y <= y2; y++) {
           for (let z = b.z; z <= z2; z++) used.add(keyOf(x, y, z));
@@ -347,6 +436,15 @@ export function structureCommands(
         }
       }
     }
+  }
+
+  // 特殊方块最后逐块放：此时支撑块已经在位，自下而上减少掉落/脱附
+  special.sort((a, b) => a.y - b.y || a.x - b.x || a.z - b.z);
+  for (const b of special) {
+    cmds.push({
+      command: `setblock ${origin.x + b.x} ${origin.y + b.y + offsetY} ${origin.z + b.z} ${b.block}`,
+      count: 1,
+    });
   }
   return cmds;
 }

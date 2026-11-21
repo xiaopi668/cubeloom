@@ -220,6 +220,57 @@ export async function x19Post<T = any>(
   return data as T;
 }
 
+/**
+ * 按 **联机专区组件 ID（res_id）** 列出房间。
+ *
+ * 协议来源：攻击器 Crow-Brother-Ads 的 `Attack/Program.cs`：
+ *   POST {g79apigateway}/online-lobby-room/query/list-room-by-res-id
+ *   {"lobby_manifest_version":"","length":10000,"version":<pe 版本>,"with_friend":true,"offset":0,"res_id":"<id>"}
+ * 拿到的是「绑了这个专区/组件的所有房间」，适合已知组件 ID 但不知道房间号时用。
+ */
+export async function searchLobbyRoomsByResId(
+  resId: string,
+  cred: X19Credential,
+  opts: X19PostOptions & { version?: string; length?: number } = {}
+): Promise<LobbyRoom[]> {
+  const id = String(resId || "").trim();
+  if (!id) throw new X19ApiError("请填写联机专区组件 ID（res_id）");
+  const version = opts.version || (await currentPeVersion(opts.fetchImpl || fetch));
+  const body = JSON.stringify({
+    lobby_manifest_version: "",
+    length: Math.max(1, Math.min(10000, Math.trunc(opts.length ?? 200))),
+    version,
+    with_friend: true,
+    offset: 0,
+    res_id: id,
+  });
+  const data = await x19Post<any>("/online-lobby-room/query/list-room-by-res-id", body, cred, {
+    ...opts,
+    host: LOBBY_HOST,
+  });
+  return parseLobbyRooms(data);
+}
+
+/** 把大厅房列表响应转成 LobbyRoom[]（搜索 / 按 res_id 列表共用） */
+function parseLobbyRooms(data: any): LobbyRoom[] {
+  const list: any[] = Array.isArray(data?.entities) ? data.entities : [];
+  return list
+    .map((item) => {
+      const members = Array.isArray(item?.member_uids) ? item.member_uids : [];
+      return {
+        entityId: String(item?.entity_id ?? ""),
+        name: String(item?.room_name ?? ""),
+        hasPwd: Number(item?.password ?? 0) === 1 || item?.password === true,
+        playerCount: members.length,
+        maxCount: Number(item?.max_count ?? 0) || 0,
+        version: String(item?.version ?? ""),
+        lobbyManifestVersion: String(item?.lobby_manifest_version ?? ""),
+        resId: String(item?.res_id ?? ""),
+      };
+    })
+    .filter((r) => !!r.entityId);
+}
+
 /** 房间号 / 房间名 → 候选租赁服（接口本身同时匹配 ID 与名称） */
 export async function searchRentalServers(
   keyword: string,
@@ -422,22 +473,7 @@ export async function searchLobbyRooms(
     length: 50,
   });
   const data = await x19Post<any>("/online-lobby-room/query/search-by-name", body, cred, opts);
-  const list: any[] = Array.isArray(data?.entities) ? data.entities : [];
-  return list
-    .map((item) => {
-      const members = Array.isArray(item?.member_uids) ? item.member_uids : [];
-      return {
-        entityId: String(item?.entity_id ?? ""),
-        name: String(item?.room_name ?? ""),
-        hasPwd: Number(item?.password ?? 0) === 1 || item?.password === true,
-        playerCount: members.length,
-        maxCount: Number(item?.max_count ?? 0) || 0,
-        version: String(item?.version ?? ""),
-        lobbyManifestVersion: String(item?.lobby_manifest_version ?? ""),
-        resId: String(item?.res_id ?? ""),
-      };
-    })
-    .filter((r) => !!r.entityId);
+  return parseLobbyRooms(data);
 }
 
 /** 房间组件 ID：res_id 优先；没有就退回数字房间号，最后才是实体 ID */
@@ -887,20 +923,38 @@ export async function purchasePeRoomComponent(
   });
   // PE 接口只认 PE 通道的登录态；没有 PE token 时才退回 PC token（旧版本账号）
   const peCred = peCredential(cred);
+  /**
+   * host 顺序：g79mclobt（VQ 的 PeWebServer）→ g79apigateway（攻击器 Crow-Brother-Ads 用的）。
+   * 两个都是网易的 PE 网关，实测都能处理 /pe-purchase-item/；某个域名抽风/被限时换一个还有机会。
+   * 只在「传输层/参数类」失败时换 host——`16 目标找不到`（ID 不对）和「另一处登录」（token 过期）换 host 没用。
+   */
+  const HOSTS = [RENTAL_HOST, LOBBY_HOST];
   let data: any;
-  try {
-    data = await x19Post<any>("/pe-purchase-item/", peBody, peCred, {
-      ...opts,
-      host: RENTAL_HOST,
-      allowCodes: ["502", "16"],
-    });
-  } catch (e: any) {
-    const err = normalizePurchaseError(e, "pe", "/pe-purchase-item/");
+  let lastErr: any = null;
+  for (const host of HOSTS) {
+    try {
+      data = await x19Post<any>("/pe-purchase-item/", peBody, peCred, {
+        ...opts,
+        host,
+        allowCodes: ["502", "16"],
+      });
+      lastErr = null;
+      break;
+    } catch (e: any) {
+      const err = normalizePurchaseError(e, "pe", "/pe-purchase-item/");
+      lastErr = err;
+      if (isPeSessionStaleError(err) || isItemNotFoundError(err)) break;
+      // 只有「域名/网络层」失败才换 host；参数错误直接走 PC 回退，别多打一次
+      const transport = /HTTP [45]|请求失败|timeout|ECONN|ENOTFOUND|socket|fetch failed/i.test(err.message);
+      if (!transport) break;
+    }
+  }
+  if (lastErr) {
     // 有些账号/服务端只认 PC 的购买接口，PE 接口会回「参数错误」
-    if (opts.pcFallback !== false && /参数错误|invalid|param/i.test(err.message)) {
+    if (opts.pcFallback !== false && /参数错误|invalid|param/i.test(lastErr.message)) {
       return purchasePcComponent(id, cred, opts);
     }
-    throw err;
+    throw lastErr;
   }
   const code = String(data?.code ?? "0");
   if (code === "0") return { channel: "pe", itemId: id, alreadyOwned: false };

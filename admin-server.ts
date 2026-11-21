@@ -34,6 +34,7 @@ import {
   resolveRealmsAddress,
   resolveRentalRoom,
   searchLobbyRooms,
+  searchLobbyRoomsByResId,
   searchRentalServers,
   fetchZoneOwnership,
   isPeSessionStaleError,
@@ -1648,6 +1649,7 @@ async function resolveRoomForPanel(body: any) {
       return {
         kind,
         entityId: room.entityId,
+        resId: room.resId,
         name: room.name,
         hasPwd: room.hasPwd,
         playerCount: 0,
@@ -1669,6 +1671,7 @@ async function resolveRoomForPanel(body: any) {
     return {
       kind,
       entityId: resolved.server.entityId,
+      resId: resolved.server.resId,
       name: resolved.server.name,
       hasPwd: resolved.server.hasPwd,
       playerCount: resolved.server.playerCount,
@@ -1773,10 +1776,19 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
    * PE 账号，`LaunchProgram` 再从 `Account` 取 UserID/Token，并加 `--g79`）。
    * 租赁服/山头服仍用 PC 登录态（它们本来就是 x19 那套接口）。
    */
-  const launchCred =
-    (room.kind === "lobby" || room.kind === "local") && hasPeSession(credOf(cred))
-      ? peCredential(credOf(cred))
-      : { userId: cred.entityId, token: cred.token };
+  const usePeForLaunch = (room.kind === "lobby" || room.kind === "local") && hasPeSession(credOf(cred));
+  const launchCred = usePeForLaunch
+    ? peCredential(credOf(cred))
+    : { userId: cred.entityId, token: cred.token };
+  /**
+   * --NeteaseServerID 用什么 ID（VQ LaunchPage）：
+   *   联机大厅 PE 账号 → 房间 entityId；PC 账号 → 房间 resId（专区物品 ID）。
+   * 传错会进不去/进错服，所以按实际启动用的通道来取。
+   */
+  const engineServerId =
+    room.kind === "lobby" && !usePeForLaunch
+      ? String(room.resId || room.entityId)
+      : String(room.entityId);
   let argv: string[];
   try {
     argv = [
@@ -1784,7 +1796,7 @@ async function startNetease(body: any): Promise<{ ok: boolean; error?: string; m
       ...buildEngineArgs({
         userId: launchCred.userId,
         token: launchCred.token,
-        entityId: room.entityId,
+        entityId: engineServerId,
         serverKind,
         host: room.host,
         port: room.port,
@@ -2738,10 +2750,16 @@ const server = createServer(async (req, res) => {
         const kind = String(body?.roomKind ?? "") === "lobby" ? "lobby" : "rental";
         if (kind === "lobby") {
           const cfg = readAccountCfg();
+          // 支持 `res:<组件ID>` / `组件:<组件ID>`：按联机专区组件列出房间（不知道房间号时用）
+          const resMatch = /^(?:res|组件)\s*[:：]\s*(\d{6,})$/i.exec(keyword);
           const list = await withAuthRetry(() =>
-            searchLobbyRooms(keyword, credOf(cred), {
-              version: String(body?.lobbyVersion ?? cfg.lobbyVersion ?? "") || undefined,
-            })
+            resMatch
+              ? searchLobbyRoomsByResId(resMatch[1], credOf(cred), {
+                  version: String(body?.lobbyVersion ?? cfg.lobbyVersion ?? "") || undefined,
+                })
+              : searchLobbyRooms(keyword, credOf(cred), {
+                  version: String(body?.lobbyVersion ?? cfg.lobbyVersion ?? "") || undefined,
+                })
           );
           return sendJson(res, 200, {
             ok: true,

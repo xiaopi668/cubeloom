@@ -36,6 +36,7 @@ import {
   resolveRealmsAddress,
   resolveRentalAddress,
   searchLobbyRooms,
+  searchLobbyRoomsByResId,
   searchRentalServers,
   x19Post,
 } from "../src/netease-room";
@@ -874,4 +875,71 @@ test("联机大厅：两个通道都 501 时才报 501，且不偷偷取地址",
   await assert.rejects(() => resolveLobbyAddress(room, "", peCred, { fetchImpl: fakeFetch }), /组件 ID：4659475350398889607/);
   assert.equal(calls.filter((u) => u.endsWith("/online-lobby-room-enter")).length, 2);
   assert.equal(calls.filter((u) => u.endsWith("/online-lobby-game-enter")).length, 0);
+});
+
+test("按联机专区组件 ID 列房间：走 list-room-by-res-id", async () => {
+  resetPeVersionCache();
+  const calls: Array<{ url: string; body: string }> = [];
+  const fakeFetch = (async (url: string, init: any) => {
+    calls.push({ url, body: init.body });
+    if (url.includes("/status/MCVersion.json")) {
+      return new Response(JSON.stringify({ pe: "1.21.130" }), { status: 200 });
+    }
+    if (url.endsWith("/online-lobby-room/query/list-room-by-res-id")) {
+      return new Response(
+        JSON.stringify({
+          code: 0,
+          entities: [
+            {
+              entity_id: "4691878942147351937",
+              room_name: "72563",
+              password: 0,
+              member_uids: ["a", "b"],
+              max_count: 10,
+              version: "1.21.120",
+              lobby_manifest_version: "mv",
+              res_id: "4659475350398889607",
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    }
+    return new Response("{}", { status: 404 });
+  }) as unknown as typeof fetch;
+
+  const list = await searchLobbyRoomsByResId("4659475350398889607", CRED, { fetchImpl: fakeFetch });
+  assert.equal(list.length, 1);
+  assert.equal(list[0].entityId, "4691878942147351937");
+  assert.equal(list[0].resId, "4659475350398889607");
+  assert.equal(list[0].playerCount, 2);
+  const req = calls.find((c) => c.url.endsWith("/list-room-by-res-id"))!;
+  assert.match(req.url, /g79apigatewayobt\.minecraft\.cn/);
+  const body = JSON.parse(req.body);
+  assert.equal(body.res_id, "4659475350398889607");
+  assert.equal(body.length, 200);
+  assert.equal(body.with_friend, true);
+});
+
+test("PE 领取：第一个域名网络失败时换 g79apigateway 再试", async () => {
+  const hosts: string[] = [];
+  const fakeFetch = (async (url: string) => {
+    hosts.push(new URL(url).host);
+    if (hosts.length === 1) throw new TypeError("fetch failed");
+    return new Response(JSON.stringify({ code: 0 }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const out = await purchasePeRoomComponent("4659475350398889607", CRED, { fetchImpl: fakeFetch });
+  assert.equal(out.alreadyOwned, false);
+  assert.deepEqual(hosts, ["g79mclobt.minecraft.cn", "g79apigatewayobt.minecraft.cn"]);
+});
+
+test("PE 领取：目标找不到（16）不换域名，直接报错", async () => {
+  let n = 0;
+  const fakeFetch = (async () => {
+    n++;
+    return new Response(JSON.stringify({ code: 16, message: "目标找不到" }), { status: 200 });
+  }) as unknown as typeof fetch;
+  resetLobbyCooldown();
+  await assert.rejects(() => purchasePeRoomComponent("123456789", CRED, { fetchImpl: fakeFetch }), /目标找不到/);
+  assert.equal(n, 1, "16 不该再打第二个域名");
 });

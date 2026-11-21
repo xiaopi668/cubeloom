@@ -3,6 +3,15 @@
 版本号在 `package.json`（`version`）和 `packaging/android/app/build.gradle`（`versionName` / `versionCode`）两处同步。
 0.1.6 之前有 git tag（`v0.1.2` … `v0.1.6`）；之后按功能批次归纳，逐条提交见 GitHub 提交历史。
 
+## 0.2.7
+
+参考 GitHub `adb-lanlu/Crow-Brother-Ads`（联机大厅广告机，C# + C++）里真实调用网易接口的那部分：
+
+- 新增 `searchLobbyRoomsByResId()`：按联机专区组件 ID 列房间（`/online-lobby-room/query/list-room-by-res-id`），面板搜索框支持 `组件:<res_id>` 写法
+- PE 领取组件增加域名回退：`g79mclobt` 网络层失败时换 `g79apigatewayobt` 再试一次（`16 目标找不到` / `另一处登录` 不换，避免白发请求）
+- 修正引擎 `--NeteaseServerID`：联机大厅走 PE 账号时用房间 `entityId`，走 PC 账号时用 `resId`（与 VQ `LaunchPage` 的分支一致；之前一律传 entityId）
+- 测试 131 条
+
 ## 0.2.6
 
 参考《星月导入器 1.0.5》（Go 源码）的 `chunk_fill` 规划器，补上两处正确性/效率细节：

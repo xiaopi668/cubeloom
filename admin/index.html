@@ -15,17 +15,21 @@
       <img src="/assets/icon.svg" alt="Cubeloom" />
       <div><div class="t">Cubeloom</div><div class="s">Console</div></div>
     </div>
+    <div class="platform-switch" id="platform-switch" role="tablist" aria-label="选择版本">
+      <button class="pf-btn active" type="button" data-platform="intl" role="tab" aria-selected="true">国际基岩版</button>
+      <button class="pf-btn" type="button" data-platform="netease" role="tab" aria-selected="false">网易版</button>
+    </div>
     <div class="sb-group">总览</div>
-      <a class="nav-item" data-page="dashboard"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>仪表盘</span></a>
-      <a class="nav-item" data-page="structure"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v10"/><path d="M8 7l4-4 4 4"/><path d="M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg><span>结构导入</span></a>
-      <a class="nav-item" data-page="pixel"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg><span>图片导入</span></a>
-      <a class="nav-item" data-page="pixeltext"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5h16v2"/><path d="M12 5v14"/><path d="M8 19h8"/></svg><span>像素字</span></a>
-      <a class="nav-item" data-page="netease"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6"/><path d="M12 22v-6"/><path d="M4.9 4.9l4.2 4.2"/><path d="M14.9 14.9l4.2 4.2"/><path d="M2 12h6"/><path d="M16 12h6"/><path d="M4.9 19.1l4.2-4.2"/><path d="M14.9 9.1l4.2-4.2"/></svg><span>网易版</span></a>
+      <a class="nav-item" data-page="dashboard" data-platform="intl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>仪表盘</span></a>
+      <a class="nav-item" data-page="structure" data-platform="intl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v10"/><path d="M8 7l4-4 4 4"/><path d="M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg><span>结构导入</span></a>
+      <a class="nav-item" data-page="pixel" data-platform="intl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg><span>图片导入</span></a>
+      <a class="nav-item" data-page="pixeltext" data-platform="intl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5h16v2"/><path d="M12 5v14"/><path d="M8 19h8"/></svg><span>像素字</span></a>
+      <a class="nav-item" data-page="netease" data-platform="netease"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6"/><path d="M12 22v-6"/><path d="M4.9 4.9l4.2 4.2"/><path d="M14.9 14.9l4.2 4.2"/><path d="M2 12h6"/><path d="M16 12h6"/><path d="M4.9 19.1l4.2-4.2"/><path d="M14.9 9.1l4.2-4.2"/></svg><span>网易版</span></a>
       <div class="sb-group">工作区</div>
-      <a class="nav-item" data-page="tasks"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg><span>任务队列</span></a>
-      <a class="nav-item" data-page="tools"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0 5 5L21 21H3l8.7-8.7a4 4 0 0 0 5-5z"/></svg><span>快捷操作</span></a>
-      <a class="nav-item" data-page="console"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg><span>控制台</span></a>
-      <a class="nav-item" data-page="logs"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 12h7M9 16h7"/></svg><span>日志</span></a>
+      <a class="nav-item" data-page="tasks" data-platform="intl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg><span>任务队列</span></a>
+      <a class="nav-item" data-page="tools" data-platform="intl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0 5 5L21 21H3l8.7-8.7a4 4 0 0 0 5-5z"/></svg><span>快捷操作</span></a>
+      <a class="nav-item" data-page="console" data-platform="intl"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg><span>控制台</span></a>
+      <a class="nav-item" data-page="logs" data-platform="both"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 12h7M9 16h7"/></svg><span>日志</span></a>
     <div class="sb-foot">
       <span class="hint">Cubeloom · Console</span>
     </div>
@@ -37,26 +41,27 @@
       <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
       
   <div class="badges">
-    <span class="pill" id="pill-ws"><span class="dot" id="dot-ws"></span><span id="pill-ws-text">正在检测服务…</span></span>
-    <span class="pill"><span class="dot" id="dot-game"></span><span id="pill-game-text">游戏未连接</span></span>
+    <span class="pill" id="pill-ws" data-platform="intl"><span class="dot" id="dot-ws"></span><span id="pill-ws-text">正在检测服务…</span></span>
+    <span class="pill" data-platform="intl"><span class="dot" id="dot-game"></span><span id="pill-game-text">游戏未连接</span></span>
+    <span class="pill" id="pill-nte" data-platform="netease"><span class="dot" id="dot-nte"></span><span id="pill-nte-text">网易版服务未启动</span></span>
     <span class="clock">北京时间（UTC+8） <b id="clock">--:--:--</b></span>
   </div>
   <div class="spacer"></div>
-  <div class="conn">
+  <div class="conn" data-platform="intl">
     <span class="hint">游戏内输入：<b id="connect-cmd">/connect ws://…</b></span>
     <button class="btn small ghost" id="btn-copy">复制地址</button>
   </div>
   <div class="actions">
     <button class="btn small ghost" id="btn-theme" title="切换主题" aria-label="切换主题"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.6v2.2M12 19.2v2.2M4.6 12H2.4M21.6 12h-2.2M6.3 6.3 4.8 4.8M19.2 19.2l-1.5-1.5M17.7 6.3l1.5-1.5M4.8 19.2l1.5-1.5"/></svg></button>
-    <button class="btn small" id="btn-restart">重启服务</button>
-    <button class="btn small" id="btn-start">启动服务</button>
-    <button class="btn small" id="btn-stop">停止服务</button>
+    <button class="btn small" id="btn-restart" data-platform="intl">重启服务</button>
+    <button class="btn small" id="btn-start" data-platform="intl">启动服务</button>
+    <button class="btn small" id="btn-stop" data-platform="intl">停止服务</button>
     <button class="btn small ghost" id="btn-logout">退出登录</button>
   </div>
 
     </div>
     <div class="content">
-      <section class="page active" data-page="dashboard" id="page-dashboard">
+      <section class="page active" data-page="dashboard" data-platform="intl" id="page-dashboard">
         <div class="page-head"><div><h1>仪表盘</h1><div class="desc">服务状态、运行统计与玩家信息</div></div></div>
         <div class="page-grid"><div class="stack"><section class="panel">
       <h2>服务状态</h2>
@@ -107,7 +112,7 @@
       </div>
     </section></div></div>
       </section>
-      <section class="page " data-page="structure" id="page-structure">
+      <section class="page " data-page="structure" data-platform="intl" id="page-structure">
         <div class="page-head"><div><h1>结构导入</h1><div class="desc">上传解析 → 放置 → 回读校验 → 补建</div></div></div>
                   <section class="panel">
       <h2>导入结构 / 投影文件</h2>
@@ -134,7 +139,7 @@
       <div class="log-info" id="structure-progress" style="margin-top:6px">—</div>
     </section>
       </section>
-      <section class="page " data-page="pixel" id="page-pixel">
+      <section class="page " data-page="pixel" data-platform="intl" id="page-pixel">
         <div class="page-head"><div><h1>图片导入</h1><div class="desc">上传图片 → 自动比例与配色 → 生成方块画并导入游戏</div></div></div>
                   <section class="panel" id="panel-pixelart">
       <h2>图片导入 · 图片转方块画</h2>
@@ -177,7 +182,7 @@
       </div>
     </section>
       </section>
-            <section class="page " data-page="pixeltext" id="page-pixeltext">
+            <section class="page " data-page="pixeltext" data-platform="intl" id="page-pixeltext">
         <div class="page-head"><div><h1>像素字</h1><div class="desc">输入文字与字号，直接生成方块像素字</div></div></div>
         <div class="stack">
           <section class="panel">
@@ -254,7 +259,7 @@
         </div>
       </section>
 
-      <section class="page " data-page="netease" id="page-netease">
+      <section class="page " data-page="netease" data-platform="netease" id="page-netease">
         <div class="page-head"><div><h1>网易版</h1><div class="desc">账号登录 · 租赁服 / 联机大厅 / 山头服 / 本地联机</div></div></div>
         <div class="page-grid"><div class="stack"><section class="panel" id="panel-lan">
       <h2>手机 / 局域网访问</h2>
@@ -427,7 +432,7 @@
       <div class="log-info" id="nte-last" style="margin-top:8px">—</div>
     </section></div></div>
       </section>
-      <section class="page " data-page="tasks" id="page-tasks">
+      <section class="page " data-page="tasks" data-platform="intl" id="page-tasks">
         <div class="page-head"><div><h1>任务队列</h1><div class="desc">命令 / 等待 / 结构导入 顺序执行</div></div></div>
                   <section class="panel" id="panel-queue">
       <h2>任务队列 · 顺序执行</h2>
@@ -455,7 +460,7 @@
       <div class="log-info" style="margin-top:6px">执行时请保持本页打开；任务按顺序运行，失败会标记并继续下一条</div>
     </section>
       </section>
-      <section class="page " data-page="tools" id="page-tools">
+      <section class="page " data-page="tools" data-platform="intl" id="page-tools">
         <div class="page-head"><div><h1>快捷操作</h1><div class="desc">球体、圆盘、圆柱、墙、L 系统与常用方块</div></div></div>
         <div class="page-grid"><div class="stack"><section class="panel">
       <h2>快捷操作</h2>
@@ -487,7 +492,7 @@
       <div class="recent" id="recent-list"><div class="empty">还没有执行过命令</div></div>
     </section></div></div>
       </section>
-      <section class="page " data-page="console" id="page-console">
+      <section class="page " data-page="console" data-platform="intl" id="page-console">
         <div class="page-head"><div><h1>控制台</h1><div class="desc">沙箱代码与游戏指令</div></div></div>
                   <section class="panel">
       <h2>控制台</h2>
@@ -500,7 +505,7 @@
       </div>
     </section>
       </section>
-      <section class="page " data-page="logs" id="page-logs">
+      <section class="page " data-page="logs" data-platform="both" id="page-logs">
         <div class="page-head"><div><h1>日志</h1><div class="desc">实时日志、文件切换与搜索</div></div></div>
                   <section class="panel logs-panel">
       <h2>实时日志（直接读取 logs 目录下的日志文件）</h2>
@@ -759,8 +764,12 @@
       return;
     }
     nteState.status = s;
+    const pillText = $("pill-nte-text");
+    const pillDot = $("dot-nte");
     if (!s || !s.ok) {
       $("nte-status").textContent = s && s.error ? s.error : "网易版服务未启动";
+      if (pillText) pillText.textContent = "网易版服务未启动";
+      if (pillDot) pillDot.className = "dot off";
       return;
     }
     const bot = s.bot || {};
@@ -775,6 +784,8 @@
     $("nte-status").textContent = bridge.connected
       ? `事件桥已连接 · 机器人 ${ident.name || "—"}（uid ${ident.user_id || "—"}）· 服务器 ${ident.server_ip || "—"}:${ident.server_port || "—"} · ${protoText}${protoWarn}`
       : `事件桥未连接${bridge.error ? "：" + bridge.error : ""} · ${protoText}${protoWarn}`;
+    if (pillText) pillText.textContent = bridge.connected ? `网易版 · 机器人在线（${ident.name || "—"}）` : "网易版 · 事件桥未连接";
+    if (pillDot) pillDot.className = bridge.connected ? "dot on" : "dot off";
     $("nte-name").textContent = ident.name || "—";
     $("nte-pos").textContent = pos ? `${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)}` : "—";
     $("nte-players").textContent = bot.players && bot.players.players ? `${bot.players.count ?? bot.players.players.length} 人` : "—";
@@ -2089,6 +2100,43 @@
     const ws = state.status && state.status.ws;
     if (ws && ws.running && (ws.sessionCount || 0) > 0) refreshPlayer(false);
   }, 10000);
+
+  /**
+   * 平台切换：国际基岩版 / 网易版。
+   *
+   * 页面上所有带 `data-platform` 的元素按取值显示：
+   *   intl    → 只在「国际基岩版」下出现（WS 服务、结构导入、控制台…）
+   *   netease → 只在「网易版」下出现（账号、房间、机器人）
+   *   both    → 两边都显示（日志）
+   * 选择记在 localStorage，切过去时如果当前页被隐藏就跳到该平台首页。
+   */
+  function applyPlatform(pf) {
+    const p = pf === "netease" ? "netease" : "intl";
+    try { localStorage.setItem("cq-platform", p); } catch (e) {}
+    document.documentElement.setAttribute("data-pf-mode", p);
+    document.querySelectorAll("[data-platform]").forEach((el) => {
+      // 切换按钮自己带 data-platform，别被隐藏掉
+      if (el.classList.contains("pf-btn")) return;
+      const want = el.getAttribute("data-platform");
+      el.classList.toggle("pf-hide", !(want === "both" || want === p));
+    });
+    document.querySelectorAll(".pf-btn").forEach((b) => {
+      const on = b.getAttribute("data-platform") === p;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    const active = document.querySelector(".page.active");
+    if (!active || active.classList.contains("pf-hide")) {
+      const target = p === "netease" ? "netease" : "dashboard";
+      const nav = document.querySelector('.nav-item[data-page="' + target + '"]');
+      if (nav) nav.click();
+    }
+    if (p === "netease") {
+      try { nteRefresh(); } catch (e) {}
+    }
+  }
+  // 给侧栏切换按钮用（第二个 script 作用域里拿不到本函数）
+  window.__applyPlatform = applyPlatform;
 })();
 </script>
 <script src="/snowluma.js"></script><script src="/pixelart.js"></script>
@@ -2118,6 +2166,22 @@
   let saved = "dashboard";
   try { saved = localStorage.getItem("cq-console-page") || "dashboard"; } catch (e) {}
   if (document.querySelector('.nav-item[data-page="' + saved + '"]')) show(saved); else show("dashboard");
+
+  // 平台切换：国际基岩版 / 网易版
+  document.querySelectorAll(".pf-btn").forEach((b) => {
+    b.addEventListener("click", () => {
+      const pf = b.getAttribute("data-platform");
+      if (typeof window.__applyPlatform === "function") window.__applyPlatform(pf);
+    });
+  });
+  let savedPf = "intl";
+  try { savedPf = localStorage.getItem("cq-platform") || "intl"; } catch (e) {}
+  // 调试/远程快捷入口：?platform=intl|netease 直接指定版本
+  try {
+    const qp = new URLSearchParams(location.search).get("platform");
+    if (qp === "intl" || qp === "netease") savedPf = qp;
+  } catch (e) {}
+  if (typeof window.__applyPlatform === "function") window.__applyPlatform(savedPf);
 })();
 </script>
 

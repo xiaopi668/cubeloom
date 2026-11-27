@@ -300,3 +300,10 @@ html[data-theme="light"] *::-webkit-scrollbar-thumb{background:#c8cfda;backgroun
 .page-grid > .stack:last-child .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media (max-width:1200px){ .page-grid > .stack:last-child .stats{grid-template-columns:repeat(4,minmax(0,1fr))} }
 @media (max-width:560px){ .page-grid > .stack:last-child .stats{grid-template-columns:repeat(2,minmax(0,1fr))} }
+
+/* ===== 平台切换（国际基岩版 / 网易版） ===== */
+.platform-switch{display:flex;gap:4px;margin:10px 14px 6px;padding:4px;border:1px solid var(--line-2);border-radius:11px;background:var(--code-bg)}
+.pf-btn{flex:1 1 0;min-width:0;padding:7px 6px;border:0;border-radius:8px;background:transparent;color:var(--dim);font:inherit;font-size:12.5px;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap}
+.pf-btn:hover{color:var(--fg)}
+.pf-btn.active{background:var(--accent);color:#fff}
+.pf-hide{display:none!important}

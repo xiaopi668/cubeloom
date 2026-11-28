@@ -1,6 +1,6 @@
 {
   "name": "cubeloom",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Cubeloom - WebSocket based Minecraft Bedrock structure generator (voxel geometry + structure import + MIDI music box)",
   "main": "main.ts",
   "scripts": {

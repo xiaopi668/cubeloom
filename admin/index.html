@@ -303,6 +303,27 @@
       <div id="nte-upstream-row" class="sl-row" style="display:none;margin-top:8px">
         <button class="btn small" id="nte-upstream-ack">我发好了，继续</button>
       </div>
+      <details id="nte-alt-login" style="margin-top:10px; border:1px solid var(--line-2); border-radius:10px; padding:8px 10px; background:var(--card)">
+        <summary style="cursor:pointer; font-size:12.5px; color:var(--dim)">4399 账号 / Cookie 登录</summary>
+        <div class="sl-form" style="margin-top:8px">
+          <input id="nte-4399-user" type="text" placeholder="4399 账号" autocomplete="username" />
+          <input id="nte-4399-pass" type="password" placeholder="4399 密码" autocomplete="current-password" />
+        </div>
+        <div class="sl-row" style="margin-top:8px">
+          <button class="btn small" id="nte-4399-login">4399 登录</button>
+          <button class="btn small ghost" id="nte-4399-captcha">先取验证码</button>
+        </div>
+        <div id="nte-4399-captcha-box" class="sl-form" style="display:none; margin-top:8px; align-items:center">
+          <img id="nte-4399-captcha-img" alt="验证码" style="height:44px; border-radius:6px; border:1px solid var(--line-2)" />
+          <input id="nte-4399-captcha-code" type="text" placeholder="验证码（4 位）" inputmode="text" />
+        </div>
+        <div class="log-info" style="margin-top:10px; white-space:normal">或直接粘贴：4399 cookie（<code>Uauth=…; Puser=…</code>）或网易 sauth JSON（<code>{"sauth_json":"…"}</code>）</div>
+        <textarea id="nte-cookie" placeholder="Uauth=...; Puser=..." style="width:100%; min-height:64px; margin-top:6px; background:var(--code-bg); border:1px solid var(--line-2); border-radius:8px; padding:8px; font-family:var(--mono); font-size:12px; color:var(--fg); resize:vertical"></textarea>
+        <div class="sl-row" style="margin-top:8px">
+          <button class="btn small" id="nte-cookie-login">Cookie 登录</button>
+        </div>
+        <div class="log-info" id="nte-alt-state" style="margin-top:6px; white-space:normal">未使用</div>
+      </details>
       <div class="log-info" id="nte-login-state" style="margin-top:8px; white-space:normal">未登录</div>
       <div class="sl-row" style="margin-top:6px">
         <button class="btn small ghost" id="nte-session-export">导出登录态</button>
@@ -996,6 +1017,71 @@
     ntePollLogin();
   }
 
+  /* ---- 4399 / Cookie 登录 ---- */
+  let nte4399Captcha = null;
+  function nteAltState(text) {
+    const el = $("nte-alt-state");
+    if (el) el.textContent = text;
+  }
+  function nte4399ShowCaptcha(c) {
+    nte4399Captcha = c || null;
+    const box = $("nte-4399-captcha-box");
+    if (!box) return;
+    box.style.display = c ? "flex" : "none";
+    if (c) {
+      $("nte-4399-captcha-img").src = c.imageBase64;
+      $("nte-4399-captcha-code").value = "";
+    }
+  }
+  async function nte4399Login() {
+    const username = $("nte-4399-user").value.trim();
+    const password = $("nte-4399-pass").value;
+    if (!username || !password) return nteAltState("先填 4399 账号和密码");
+    nteAltState("正在登录 4399…（可能要验证码）");
+    const body = { username, password };
+    if (nte4399Captcha) {
+      body.captchaId = nte4399Captcha.captchaId;
+      body.captchaCode = $("nte-4399-captcha-code").value.trim();
+    }
+    const r = await post("/api/netease-service/login4399", body);
+    if (r && r.needCaptcha) {
+      nte4399ShowCaptcha(r.needCaptcha);
+      return nteAltState("4399 要求验证码：填下图后点「4399 登录」");
+    }
+    if (!r || !r.ok) return nteAltState((r && r.error) || "4399 登录失败");
+    nte4399ShowCaptcha(null);
+    nte4399Captcha = null;
+    $("nte-4399-pass").value = "";
+    nteAltState(`4399 登录成功：${(r.login && r.login.name) || ""}`);
+    nteRenderLogin(r.login);
+    ntePollLogin();
+  }
+  async function nte4399FetchCaptcha() {
+    const username = $("nte-4399-user").value.trim();
+    if (!username) return nteAltState("先填 4399 账号");
+    nteAltState("正在取验证码…");
+    const r = await post("/api/netease-service/login4399", { username, phase: "captcha" });
+    if (r && r.ok && r.needCaptcha) {
+      nte4399ShowCaptcha(r.needCaptcha);
+      nteAltState("验证码已取到：填下图后点「4399 登录」");
+    } else if (r && r.ok) {
+      nte4399ShowCaptcha(null);
+      nteAltState("这个账号当前不需要验证码，直接点「4399 登录」");
+    } else {
+      nteAltState((r && r.error) || "取验证码失败");
+    }
+  }
+  async function nteCookieLogin() {
+    const cookie = $("nte-cookie").value.trim();
+    if (!cookie) return nteAltState("先粘贴 cookie 或 sauth JSON");
+    nteAltState("正在用 cookie 登录…");
+    const r = await post("/api/netease-service/login-cookie", { cookie });
+    if (!r || !r.ok) return nteAltState((r && r.error) || "cookie 登录失败");
+    nteAltState(`登录成功：${(r.login && r.login.name) || ""}`);
+    nteRenderLogin(r.login);
+    ntePollLogin();
+  }
+
   async function nteSubmitSms() {
     const code = $("nte-sms-code").value.trim();
     if (!code) {
@@ -1515,6 +1601,9 @@
   }
 
   $("nte-login").onclick = () => nteLoginStart("");
+  $("nte-4399-login").onclick = nte4399Login;
+  $("nte-4399-captcha").onclick = nte4399FetchCaptcha;
+  $("nte-cookie-login").onclick = nteCookieLogin;
   $("nte-sms-mode").onclick = () => nteLoginStart("sms");
   $("nte-sms-submit").onclick = nteSubmitSms;
   $("nte-sms-code").onkeydown = (ev) => {

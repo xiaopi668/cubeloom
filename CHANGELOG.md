@@ -3,6 +3,16 @@
 版本号在 `package.json`（`version`）和 `packaging/android/app/build.gradle`（`versionName` / `versionCode`）两处同步。
 0.1.6 之前有 git tag（`v0.1.2` … `v0.1.6`）；之后按功能批次归纳，逐条提交见 GitHub 提交历史。
 
+## 0.2.9
+
+**新增 4399 渠道登录与 Cookie 登录**
+
+- 4399 账号密码登录：`ptlogin.4399.com` 登录 → `checkKidLoginUserCookie` → `microgame.5054399.net sdk/info` → 生成网易 sauth（`gameid=x19`、`login_channel/app_channel=4399pc`）→ 复用 `tools/x19login` 换 x19 token
+- 需要验证码时面板直接显示验证码图片，填完再提交；「先取验证码」可单独刷新
+- Cookie 登录：粘贴 4399 cookie（`Uauth`/`Puser`）走同一套换算；粘贴网易 sauth JSON 则直接换 token
+- 新增 `src/login-4399.ts`（纯协议、无第三方依赖）与 5 条离线测试（cookie 解析、输入识别、sauth 映射、换算流程、错误分支）
+- 测试 136 条；版本 0.2.9（versionCode 43）
+
 ## 0.2.8
 
 **面板分成两个版本，不再混在一起**

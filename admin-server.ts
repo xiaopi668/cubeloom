@@ -15,6 +15,13 @@ import * as readline from "node:readline";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import {
+  detectLoginInput,
+  fetch4399Captcha,
+  login4399WithCookie,
+  login4399WithPassword,
+  wrapSauth,
+} from "./src/login-4399";
+import {
   X19LoginSession,
   isMainlandPhone,
   normalizeLoginAccount,
@@ -1505,6 +1512,47 @@ function startX19Login(input: any) {
   return { ok: true, login: loginSnapshot() };
 }
 
+/**
+ * 用一段 sauth 跑 x19 登录助手，成功后更新内存凭据与 session.json。
+ * 4399 登录和 cookie 登录都走这里（助手本身对渠道服/官服一视同仁）。
+ */
+async function finishLoginWithSauth(
+  sauthText: string,
+  sourceLabel: string
+): Promise<{ ok: boolean; error?: string; login?: any }> {
+  if (!resolveX19LoginBinary()) {
+    return { ok: false, error: "缺少登录助手 x19login，请先运行 npm run build:x19login" };
+  }
+  if (x19Session && ["starting", "need_sms", "need_upstream", "need_password"].includes(x19Session.state.status)) {
+    x19Session.cancel();
+    x19Session = null;
+  }
+  log(`发起 ${sourceLabel} 登录（sauth → x19 助手）…`);
+  const session = new X19LoginSession(
+    { mode: "sauth", sauth: sauthText, pe: false, emitSauth: true },
+    { onLog: (line) => log(line), timeoutMs: 120_000 }
+  );
+  const state = await session.wait(125_000);
+  if (state.status !== "ok" || !state.token) {
+    return { ok: false, error: state.error || `登录失败（${state.status}）` };
+  }
+  x19Cred = {
+    entityId: state.entityId,
+    name: state.name,
+    token: state.token,
+    peEntityId: "",
+    peToken: "",
+    peTokenAt: 0,
+    at: Date.now(),
+    expiresAt: Date.now() + X19_TOKEN_TTL,
+  };
+  saveSessionFile(x19Cred);
+  if (state.sauth) saveSauthFile(state.sauth, state.entityId || "");
+  clearAuthCooldown();
+  log(`登录成功（${sourceLabel}）：${state.name || "（无昵称）"}（uid ${state.entityId}）`);
+  return { ok: true, login: loginSnapshot() };
+}
+
 function submitX19Login(body: any) {
   if (!x19Session) return { ok: false, error: "没有进行中的登录" };
   let accepted = false;
@@ -2636,6 +2684,83 @@ const server = createServer(async (req, res) => {
 
     if (p === "/api/netease-service/login" && req.method === "GET") {
       return sendJson(res, 200, { ok: true, login: loginSnapshot() });
+    }
+
+    // ---- 4399 渠道登录 / Cookie 登录 ----
+    /**
+     * 4399 登录：
+     *   phase=captcha → 只拿验证码图片（顺便告诉前端 captchaId）
+     *   其它          → 用账号密码（可带 captchaId/captchaCode）换 sauth，再走 x19 助手
+     */
+    if (p === "/api/netease-service/login4399" && req.method === "POST") {
+      const body = await readJson(req);
+      const username = String(body?.username ?? "").trim();
+      const password = String(body?.password ?? "");
+      if (!username) return sendJson(res, 200, { ok: false, error: "请填写 4399 账号" });
+      try {
+        if (String(body?.phase ?? "") === "captcha") {
+          const c = await fetch4399Captcha(username);
+          return sendJson(res, 200, c ? { ok: true, needCaptcha: c } : { ok: true, needCaptcha: null });
+        }
+        if (!password) return sendJson(res, 200, { ok: false, error: "请填写 4399 密码" });
+        let sauth;
+        try {
+          sauth = await login4399WithPassword({
+            username,
+            password,
+            captchaId: String(body?.captchaId ?? ""),
+            captchaCode: String(body?.captchaCode ?? ""),
+          });
+        } catch (e: any) {
+          // 需要验证码：顺手把图片取回来，前端直接显示
+          if (/验证码|captcha/i.test(String(e?.message ?? e))) {
+            const c = await fetch4399Captcha(username);
+            if (c) {
+              return sendJson(res, 200, {
+                ok: false,
+                error: "4399 要求输入验证码",
+                needCaptcha: c,
+              });
+            }
+          }
+          throw e;
+        }
+        const r = await finishLoginWithSauth(wrapSauth(sauth), "4399");
+        return sendJson(res, 200, { ...r, sauth });
+      } catch (e: any) {
+        return sendJson(res, 200, { ok: false, error: e?.message ?? String(e) });
+      }
+    }
+
+    /**
+     * Cookie 登录：
+     *   · `Uauth=...; Puser=...` → 4399 渠道 cookie，先换 sauth
+     *   · `{"sauth_json":...}` / 裸 sauth JSON → 网易登录态直接换 token
+     */
+    if (p === "/api/netease-service/login-cookie" && req.method === "POST") {
+      const body = await readJson(req);
+      const raw = String(body?.cookie ?? "").trim();
+      const kind = detectLoginInput(raw);
+      if (kind === "empty") return sendJson(res, 200, { ok: false, error: "请粘贴 cookie 或 sauth JSON" });
+      if (kind === "unknown") {
+        return sendJson(res, 200, {
+          ok: false,
+          error: "认不出这段内容：4399 cookie 需要包含 Uauth / Puser；网易登录态需要是 sauth JSON",
+        });
+      }
+      try {
+        let sauthText = raw;
+        let source = "网易 sauth";
+        if (kind === "cookie4399") {
+          const sauth = await login4399WithCookie(raw);
+          sauthText = wrapSauth(sauth);
+          source = "4399 cookie";
+        }
+        const r = await finishLoginWithSauth(sauthText, source);
+        return sendJson(res, 200, r);
+      } catch (e: any) {
+        return sendJson(res, 200, { ok: false, error: e?.message ?? String(e) });
+      }
     }
 
     if (p === "/api/netease-service/login/input" && req.method === "POST") {
